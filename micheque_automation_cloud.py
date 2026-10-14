@@ -17,22 +17,30 @@ URL_MARKET = "https://micheque.uy/market"
 
 def conectar_google_sheets():
     raw_json = CREDS_JSON.strip()
-    if not raw_json.startswith("{"):
-        raw_json = base64.b64decode(raw_json).decode("utf-8")
     
+    # Decodificar Base64 si viene codificado, o limpiar saltos de línea escapados
+    try:
+        if not raw_json.startswith("{"):
+            raw_json = base64.b64decode(raw_json).decode("utf-8")
+    except Exception:
+        pass
+
     creds_dict = json.loads(raw_json)
+    
     if "private_key" in creds_dict:
-        creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+        # Arreglar formato PEM reemplazando \\n por \n reales
+        pk = creds_dict["private_key"]
+        pk = pk.replace("\\n", "\n")
+        creds_dict["private_key"] = pk
         
     scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     gc = gspread.authorize(credentials)
     sh = gc.open_by_key(SPREADSHEET_ID)
     
-    # Seleccionar la pestaña activa
     try:
         return sh.worksheet("Datos sin TIR Neta")
-    except:
+    except Exception:
         return sh.get_worksheet(0)
 
 def obtener_transacciones():
