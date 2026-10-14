@@ -1,12 +1,12 @@
 import os
 import json
+import base64
 import time
 import pandas as pd
 from playwright.sync_api import sync_playwright
 import gspread
 from google.oauth2.service_account import Credentials
 
-# Cargar variables desde los Secrets de GitHub
 USERNAME = os.environ.get("MICHEQUE_USER")
 PASSWORD = os.environ.get("MICHEQUE_PASS")
 SPREADSHEET_ID = os.environ.get("GOOGLE_SHEET_ID")
@@ -16,12 +16,24 @@ URL_LOGIN = "https://micheque.uy/login"
 URL_MARKET = "https://micheque.uy/market"
 
 def conectar_google_sheets():
-    creds_dict = json.loads(CREDS_JSON)
+    raw_json = CREDS_JSON.strip()
+    if not raw_json.startswith("{"):
+        raw_json = base64.b64decode(raw_json).decode("utf-8")
+    
+    creds_dict = json.loads(raw_json)
+    if "private_key" in creds_dict:
+        creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+        
     scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     gc = gspread.authorize(credentials)
     sh = gc.open_by_key(SPREADSHEET_ID)
-    return sh.worksheet("Datos sin TIR Neta")
+    
+    # Seleccionar la pestaña activa
+    try:
+        return sh.worksheet("Datos sin TIR Neta")
+    except:
+        return sh.get_worksheet(0)
 
 def obtener_transacciones():
     transacciones = []
@@ -69,7 +81,6 @@ def ejecutar():
     ws = conectar_google_sheets()
     datos_actuales = ws.get_all_values()
     
-    # Crear claves de los registros que ya existen para no duplicar
     existentes = set()
     for r in datos_actuales[1:]:
         if len(r) >= 10:
@@ -80,18 +91,14 @@ def ejecutar():
     n_agregados = 0
     
     for t in nuevas:
-        # t = [Fecha, Tipo, Librador, Monto, Plazo, Moneda]
-        # Calcular valor numérico
         monto_clean = t[3].replace("UY$", "").replace("USD", "").replace(".", "").replace(",", ".").strip()
         clave = f"{t[0]}_{t[2]}_{t[3]}_{t[4]}_{t[5]}"
         
         if clave not in existentes:
-            # Fórmulas para las columnas de TC y Equivalente en USD
             row_idx = len(ws.get_all_values()) + 1
-            formula_tc = f"=VLOOKUP(A{row_idx}, TC!A:B, 2, FALSE)"
-            formula_eq = f"=IF(J{row_idx}=\"USD\", K{row_idx}, K{row_idx}/H{row_idx})"
+            formula_tc = f'=VLOOKUP(A{row_idx}, TC!A:B, 2, FALSE)'
+            formula_eq = f'=IF(J{row_idx}="USD", K{row_idx}, K{row_idx}/H{row_idx})'
             
-            # Nueva fila
             nueva_fila = [t[0], t[1], t[2], t[3], t[4], t[0], t[1], t[2], t[3], t[4], t[5], float(monto_clean), formula_tc, formula_eq]
             ws.append_row(nueva_fila, value_input_option="USER_ENTERED")
             n_agregados += 1
