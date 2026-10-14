@@ -14,18 +14,25 @@ def obtener_transacciones():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
-        page.goto(URL_LOGIN)
         
-        page.fill("input[type='email'], input[name='email']", USERNAME)
+        # Cargar página de login
+        page.goto(URL_LOGIN, wait_until="networkidle")
+        page.wait_for_timeout(2000)
+        
+        # Completar credenciales
+        page.fill("input[type='email'], input[name='email'], input[type='text']", USERNAME)
         page.fill("input[type='password'], input[name='password']", PASSWORD)
-        page.click("button[type='submit']")
-        page.wait_for_timeout(3000)
         
-        page.goto(URL_MARKET)
+        # Enviar formulario presionando Enter
+        page.keyboard.press("Enter")
+        page.wait_for_timeout(4000)
+        
+        # Navegar a la sección del mercado
+        page.goto(URL_MARKET, wait_until="networkidle")
         page.wait_for_timeout(3000)
 
         # Transacciones en Pesos
-        btn_pesos = page.query_selector("button:has-text('Pesos uruguayos'), div:has-text('Pesos uruguayos')")
+        btn_pesos = page.query_selector("button:has-text('Pesos uruguayos'), div:has-text('Pesos uruguayos'), span:has-text('Pesos uruguayos')")
         if btn_pesos:
             btn_pesos.click()
             page.wait_for_timeout(1500)
@@ -40,7 +47,7 @@ def obtener_transacciones():
                 })
 
         # Transacciones en Dólares
-        btn_usd = page.query_selector("button:has-text('Dólares'), div:has-text('Dólares')")
+        btn_usd = page.query_selector("button:has-text('Dólares'), div:has-text('Dólares'), span:has-text('Dólares')")
         if btn_usd:
             btn_usd.click()
             page.wait_for_timeout(1500)
@@ -63,7 +70,7 @@ def ejecutar():
         res = requests.post(WEBHOOK_URL, json={"transacciones": nuevas})
         print(f"Respuesta de Google Sheets: {res.text}")
     else:
-        print("No se encontraron transacciones.")
+        print("No se encontraron transacciones en la página.")
 
 if __name__ == "__main__":
     ejecutar()
