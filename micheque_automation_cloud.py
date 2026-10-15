@@ -10,13 +10,14 @@ WEBHOOK_URL = os.environ.get("GOOGLE_SHEET_ID")
 URL_LOGIN = "https://micheque.uy/login"
 URL_MARKET = "https://micheque.uy/market"
 
-def extraer_lista_desde_texto(texto):
+def procesar_texto_seccion(texto, moneda_default):
     transacciones = []
     lineas = [l.strip() for l in texto.split("\n") if l.strip() != ""]
+    
     i = 0
     while i < len(lineas):
         linea = lineas[i]
-        # Detectar fecha en formato DD/MM/YYYY
+        # Detectar patrón de fecha DD/MM/YYYY
         if re.match(r"^\d{1,2}/\d{1,2}/\d{4}$", linea):
             try:
                 fecha = linea
@@ -25,17 +26,23 @@ def extraer_lista_desde_texto(texto):
                 monto = lineas[i+3] if i+3 < len(lineas) else ""
                 plazo = lineas[i+4] if i+4 < len(lineas) else ""
 
-                if "UY$" in monto or "USD" in monto:
-                    moneda = "USD" if "USD" in monto else "UY$"
-                    transaccion = {
+                if any(char.isdigit() for char in monto):
+                    moneda_final = moneda_default
+                    if "USD" in monto:
+                        moneda_final = "USD"
+                    elif "UY$" in monto:
+                        moneda_final = "UY$"
+
+                    t = {
                         "Fecha": fecha,
                         "Tipo": tipo,
                         "Librador": librador,
                         "Monto": monto,
                         "Plazo": plazo,
-                        "Moneda": moneda
+                        "Moneda": moneda_final
                     }
-                    transacciones.append(transaccion)
+                    # Mantiene la secuencia exacta tal como aparece arriba/abajo
+                    transacciones.append(t)
                     i += 4
             except Exception:
                 pass
@@ -46,7 +53,7 @@ def obtener_transacciones():
     todas_transacciones = []
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        page = browser.new_page(viewport={"width": 1280, "height": 800})
+        page = browser.new_page(viewport={"width": 1400, "height": 900})
         
         # 1. Login
         print("Iniciando sesión en MiCheque...")
@@ -63,30 +70,36 @@ def obtener_transacciones():
         page.goto(URL_MARKET, wait_until="networkidle")
         page.wait_for_timeout(5000)
 
-        # Extraer Pesos
-        print("Buscando transacciones en Pesos...")
+        # Scroll para renderizar
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         page.wait_for_timeout(2000)
-        texto_pesos = page.inner_text("body")
-        todas_transacciones.extend(extraer_lista_desde_texto(texto_pesos))
 
-        # Cambiar a Dólares y extraer
-        try:
-            print("Cambiando a pestaña Dólares...")
-            btn_usd = page.query_selector("button:has-text('Dólares'), div:has-text('Dólares'), span:has-text('Dólares')")
-            if btn_usd:
-                btn_usd.click()
-                page.wait_for_timeout(3000)
-                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                page.wait_for_timeout(2000)
-                texto_usd = page.inner_text("body")
-                t_usd = extraer_lista_desde_texto(texto_usd)
-                
-                for t in t_usd:
-                    if t not in todas_transacciones:
-                        todas_transacciones.append(t)
-        except Exception as e:
-            print(f"Error al cambiar a dólares: {e}")
+        # 3. Extraer Pesos
+        print("Extrayendo sección Pesos...")
+        texto_pesos = page.inner_text("body")
+        pesos = procesar_texto_seccion(texto_pesos, "UY$")
+        todas_transacciones.extend(pesos)
+
+        # 4. Cambiar a Dólares
+        print("Buscando y haciendo clic en Dólares...")
+        elementos_usd = page.query_selector_all("*:has-text('Dólares')")
+        clic_exitoso = False
+        for elem in elementos_usd:
+            try:
+                if elem.is_visible() and elem.tag_name in ["BUTTON", "A", "DIV", "SPAN"]:
+                    elem.click()
+                    clic_exitoso = True
+                    page.wait_for_timeout(3000)
+                    break
+            except Exception:
+                continue
+
+        if clic_exitoso:
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            page.wait_for_timeout(2000)
+            texto_usd = page.inner_text("body")
+            usd_items = procesar_texto_seccion(texto_usd, "USD")
+            todas_transacciones.extend(usd_items)
 
         browser.close()
     return todas_transacciones
@@ -94,7 +107,7 @@ def obtener_transacciones():
 def ejecutar():
     nuevas = obtener_transacciones()
     if nuevas:
-        print(f"¡Éxito! Se encontraron {len(nuevas)} transacciones. Enviando a Google Sheets...")
+        print(f"¡Éxito! Se extrajeron {len(nuevas)} transacciones en total. Enviando a Google Sheets...")
         res = requests.post(WEBHOOK_URL, json={"transacciones": nuevas})
         print(f"Respuesta de Google Sheets: {res.text}")
     else:
