@@ -14,12 +14,11 @@ def obtener_transacciones():
     transacciones = []
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        # Pantalla con resolución de escritorio para cargar todo el layout
         page = browser.new_page(viewport={"width": 1280, "height": 800})
         
         # 1. Login
         print("Iniciando sesión en MiCheque...")
-        page.goto(URL_LOGIN, wait_until="domcontentloaded")
+        page.goto(URL_LOGIN, wait_until="networkidle")
         page.wait_for_timeout(2000)
         
         page.fill("input[type='email'], input[name='email'], input[type='text']", USERNAME)
@@ -27,46 +26,49 @@ def obtener_transacciones():
         page.keyboard.press("Enter")
         page.wait_for_timeout(4000)
         
-        # 2. Navegar a la página con las transacciones
+        # 2. Navegar al mercado
         print("Navegando al mercado...")
         page.goto(URL_MARKET, wait_until="networkidle")
-        page.wait_for_timeout(5000)
+        page.wait_for_timeout(6000)
 
-        # Esperar a que cargue el contenido
-        try:
-            page.wait_for_selector("text=Últimas transacciones", timeout=10000)
-        except Exception:
-            print("No se encontró el texto de cabecera, intentando lectura directa...")
-
-        # Guardar scroll para asegurar renderizado
+        # Hacer scroll para forzar la carga de componentes dinámicos
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         page.wait_for_timeout(2000)
 
-        # Extraer todas las filas visuales que contengan información
-        elementos = page.query_selector_all("tr, div.flex, div.grid")
+        # 3. Extraer todo el texto visible de la página
+        texto_pagina = page.inner_text("body")
+        lineas = [l.strip() for l in texto_pagina.split("\n") if l.strip() != ""]
 
-        for el in elementos:
-            texto = el.inner_text().strip()
-            lineas = [l.strip() for l in texto.split("\n") if l.strip() != ""]
-            
-            # Formato esperado: [Fecha, Tipo, Librador, Monto, Plazo]
-            # Ejemplo: ['14/10/2026', 'Cheque', 'CASMU', 'UY$ 1.000.000', '43']
-            if len(lineas) >= 5 and re.match(r"^\d{1,2}/\d{1,2}/\d{4}$", lineas[0]):
-                monto_str = lineas[3] if len(lineas) > 3 else ""
-                moneda = "USD" if "USD" in monto_str else "UY$"
-                
-                transaccion = {
-                    "Fecha": lineas[0],
-                    "Tipo": lineas[1],
-                    "Librador": lineas[2],
-                    "Monto": monto_str,
-                    "Plazo": lineas[4] if len(lineas) > 4 else "",
-                    "Moneda": moneda
-                }
-                
-                # Evitar duplicados dentro del mismo scraping
-                if transaccion not in transacciones:
-                    transacciones.append(transaccion)
+        # Recorrer las líneas buscando patrones de fecha (Ej: 14/10/2026 o 15/10/2026)
+        i = 0
+        while i < len(lineas):
+            linea = lineas[i]
+            # Detecta fecha DD/MM/YYYY
+            if re.match(r"^\d{1,2}/\d{1,2}/\d{4}$", linea):
+                try:
+                    fecha = linea
+                    tipo = lineas[i+1] if i+1 < len(lineas) else ""
+                    librador = lineas[i+2] if i+2 < len(lineas) else ""
+                    monto = lineas[i+3] if i+3 < len(lineas) else ""
+                    plazo = lineas[i+4] if i+4 < len(lineas) else ""
+
+                    # Validar que sea un registro válido (Monto debe contener UY$ o USD)
+                    if "UY$" in monto or "USD" in monto:
+                        moneda = "USD" if "USD" in monto else "UY$"
+                        transaccion = {
+                            "Fecha": fecha,
+                            "Tipo": tipo,
+                            "Librador": librador,
+                            "Monto": monto,
+                            "Plazo": plazo,
+                            "Moneda": moneda
+                        }
+                        if transaccion not in transacciones:
+                            transacciones.append(transaccion)
+                        i += 4  # Avanzar el índice al siguiente bloque
+                except Exception as e:
+                    pass
+            i += 1
 
         browser.close()
     return transacciones
