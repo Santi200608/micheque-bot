@@ -10,7 +10,7 @@ WEBHOOK_URL = os.environ.get("GOOGLE_SHEET_ID")
 URL_LOGIN = "https://micheque.uy/login"
 URL_MARKET = "https://micheque.uy/market"
 
-def procesar_texto_seccion(texto, moneda_default):
+def procesar_texto_seccion(texto, moneda_esperada):
     transacciones = []
     lineas = [l.strip() for l in texto.split("\n") if l.strip() != ""]
     
@@ -27,11 +27,15 @@ def procesar_texto_seccion(texto, moneda_default):
                 plazo = lineas[i+4] if i+4 < len(lineas) else ""
 
                 if any(char.isdigit() for char in monto):
-                    moneda_final = moneda_default
-                    if "USD" in monto:
-                        moneda_final = "USD"
-                    elif "UY$" in monto:
-                        moneda_final = "UY$"
+                    es_usd = "USD" in monto
+                    es_uys = "UY$" in monto
+
+                    # Si estamos extrayendo la sección Dólares pero la tabla todavía muestra UY$, descartamos esa línea
+                    if moneda_esperada == "USD" and es_uys and not es_usd:
+                        i += 4
+                        continue
+
+                    moneda_final = "USD" if es_usd else ("UY$" if es_uys else moneda_esperada)
 
                     t = {
                         "Fecha": fecha,
@@ -54,7 +58,7 @@ def obtener_transacciones():
         browser = p.chromium.launch(headless=True)
         page = browser.new_page(viewport={"width": 1400, "height": 900})
         
-        # 1. Inicio de sesión
+        # 1. Login
         print("Iniciando sesión en MiCheque...")
         page.goto(URL_LOGIN, wait_until="networkidle")
         page.wait_for_timeout(2000)
@@ -64,11 +68,12 @@ def obtener_transacciones():
         page.keyboard.press("Enter")
         page.wait_for_timeout(4000)
         
-        # 2. Ir a la sección del mercado
+        # 2. Navegar al mercado
         print("Navegando al mercado...")
         page.goto(URL_MARKET, wait_until="networkidle")
         page.wait_for_timeout(5000)
 
+        # Scroll para renderizado
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         page.wait_for_timeout(2000)
 
@@ -77,42 +82,49 @@ def obtener_transacciones():
         texto_pesos = page.inner_text("body")
         pesos = procesar_texto_seccion(texto_pesos, "UY$")
         todas_transacciones.extend(pesos)
+        print(f"Pesos extraídos: {len(pesos)}")
 
-        # 4. Cambiar a Dólares (Soporta formatos dinámicos como 'Dólares (3)', 'Dólares (0)', etc.)
-        print("Buscando solapa de Dólares...")
+        # 4. Cambiar a la pestaña de Dólares
+        print("Cambiando a la vista de Dólares...")
         try:
             elementos = page.query_selector_all("button, div, span, a")
-            btn_usd = None
+            target_usd = None
             
             for elem in elementos:
                 try:
                     txt = elem.inner_text().strip()
                     if re.search(r"^dólares|^dolares", txt, re.IGNORECASE):
-                        btn_usd = elem
+                        target_usd = elem
                         break
                 except Exception:
                     continue
 
-            if btn_usd:
-                btn_usd.evaluate("el => el.click()")
-                print("Clic en la solapa de Dólares ejecutado.")
+            if target_usd:
+                target_usd.evaluate("el => el.click()")
+                print("Clic realizado. Esperando actualización de la tabla de dólares...")
                 
-                page.wait_for_timeout(4000)
+                # Espera extendida de 8 segundos para dar tiempo al renderizado de la tabla inferior
+                page.wait_for_timeout(8000)
+                
+                # Intentar esperar dinámicamente si aparece el texto 'USD'
+                try:
+                    page.wait_for_function("document.body.innerText.includes('USD')", timeout=5000)
+                except Exception:
+                    print("Tiempo de espera dinámico agotado, continuando con lectura...")
+
                 page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                 page.wait_for_timeout(2000)
                 
                 texto_usd = page.inner_text("body")
                 usd_items = procesar_texto_seccion(texto_usd, "USD")
-                print(f"Se encontraron {len(usd_items)} transacciones en Dólares.")
+                print(f"Dólares extraídos reales: {len(usd_items)}")
                 
                 for u in usd_items:
-                    if u["Moneda"] == "UY$" and "UY$" not in u["Monto"]:
-                        u["Moneda"] = "USD"
                     todas_transacciones.append(u)
             else:
-                print("No se encontró el botón de Dólares o no hay publicaciones.")
+                print("No se encontró el botón de Dólares.")
         except Exception as e:
-            print(f"Aviso al buscar Dólares: {e}")
+            print(f"Error al cambiar a Dólares: {e}")
 
         browser.close()
     return todas_transacciones
