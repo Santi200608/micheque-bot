@@ -83,19 +83,29 @@ def obtener_transacciones():
         todas_transacciones.extend(pesos)
         print(f"Pesos extraídos: {len(pesos)}")
 
-        # 4. Cambiar a Dólares con clic simulado de ratón humano
+        # 4. Cambiar a Dólares
         print("Buscando botón de Dólares...")
         try:
-            # Buscar el elemento que contiene Dólares/Dolares
-            selector_usd = "text=/^Dólares|^Dolares/i"
-            btn_usd = page.locator(selector_usd).first
+            # Buscar cualquier elemento visible que contenga la palabra Dólares o Dolares
+            elementos = page.query_selector_all("button, div, span, a")
+            target_usd = None
+            
+            for elem in elementos:
+                try:
+                    txt = elem.inner_text().strip()
+                    if "dólares" in txt.lower() or "dolares" in txt.lower():
+                        if elem.is_visible():
+                            target_usd = elem
+                            break
+                except Exception:
+                    continue
 
-            if btn_usd and btn_usd.is_visible():
-                print("Elemento de Dólares localizado. Haciendo clic real...")
-                btn_usd.click(force=True)
+            if target_usd:
+                print("Botón de Dólares encontrado. Haciendo clic...")
+                target_usd.click(force=True)
                 
-                # Espera de 6 segundos para recarga del componente dinámico
-                page.wait_for_timeout(6000)
+                # Pausa de 7 segundos para permitir la actualización de la tabla inferior
+                page.wait_for_timeout(7000)
                 page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                 page.wait_for_timeout(2000)
                 
@@ -107,9 +117,9 @@ def obtener_transacciones():
                     for u in usd_items:
                         todas_transacciones.append(u)
                 else:
-                    print("La tabla no cambió a USD o no hay transacciones en Dólares disponibles.")
+                    print("No hay transacciones en Dólares disponibles o la tabla no refrescó.")
             else:
-                print("No se encontró la solapa visible de Dólares.")
+                print("No se encontró el botón de Dólares en la interfaz.")
         except Exception as e:
             print(f"Error al cambiar a Dólares: {e}")
 
