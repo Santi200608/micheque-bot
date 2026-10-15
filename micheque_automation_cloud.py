@@ -41,7 +41,6 @@ def procesar_texto_seccion(texto, moneda_default):
                         "Plazo": plazo,
                         "Moneda": moneda_final
                     }
-                    # Mantiene la secuencia exacta tal como aparece arriba/abajo
                     transacciones.append(t)
                     i += 4
             except Exception:
@@ -80,26 +79,39 @@ def obtener_transacciones():
         pesos = procesar_texto_seccion(texto_pesos, "UY$")
         todas_transacciones.extend(pesos)
 
-        # 4. Cambiar a Dólares
-        print("Buscando y haciendo clic en Dólares...")
-        elementos_usd = page.query_selector_all("*:has-text('Dólares')")
-        clic_exitoso = False
-        for elem in elementos_usd:
-            try:
-                if elem.is_visible() and elem.tag_name in ["BUTTON", "A", "DIV", "SPAN"]:
-                    elem.click()
-                    clic_exitoso = True
-                    page.wait_for_timeout(3000)
+        # 4. Cambiar a Dólares usando múltiple estrategia de clic
+        print("Cambiando a vista de Dólares...")
+        try:
+            # Buscar selectores/botones de dólares
+            pestañas_usd = page.query_selector_all("button, div, span, a")
+            hizo_click = False
+            
+            for elem in pestañas_usd:
+                txt = elem.inner_text().strip().lower()
+                if txt in ["dólares", "dolares", "usd"]:
+                    # Forzar clic por evento directo de JS
+                    elem.evaluate("el => el.click()")
+                    hizo_click = True
+                    print("Clic en Dólares ejecutado con éxito.")
                     break
-            except Exception:
-                continue
-
-        if clic_exitoso:
-            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            page.wait_for_timeout(2000)
-            texto_usd = page.inner_text("body")
-            usd_items = procesar_texto_seccion(texto_usd, "USD")
-            todas_transacciones.extend(usd_items)
+            
+            if hizo_click:
+                page.wait_for_timeout(4000)
+                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                page.wait_for_timeout(2000)
+                texto_usd = page.inner_text("body")
+                usd_items = procesar_texto_seccion(texto_usd, "USD")
+                
+                print(f"Se encontraron {len(usd_items)} registros en la vista de Dólares.")
+                for u in usd_items:
+                    # Garantizar marca en USD si proviene de esta vista
+                    if u["Moneda"] == "UY$" and "UY$" not in u["Monto"]:
+                        u["Moneda"] = "USD"
+                    todas_transacciones.append(u)
+            else:
+                print("No se encontró el botón/pestaña explícito de Dólares.")
+        except Exception as e:
+            print(f"Error al cambiar a Dólares: {e}")
 
         browser.close()
     return todas_transacciones
