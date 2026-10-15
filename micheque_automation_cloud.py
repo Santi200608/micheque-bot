@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import requests
 from playwright.sync_api import sync_playwright
 
@@ -30,7 +31,7 @@ def procesar_texto_seccion(texto, moneda_esperada):
                     es_usd = "USD" in monto
                     es_uys = "UY$" in monto
 
-                    # Si estamos extrayendo la sección Dólares pero la tabla todavía muestra UY$, descartamos esa línea
+                    # Si estamos en la sección Dólares pero la tabla todavía tiene UY$, la descartamos
                     if moneda_esperada == "USD" and es_uys and not es_usd:
                         i += 4
                         continue
@@ -84,43 +85,46 @@ def obtener_transacciones():
         todas_transacciones.extend(pesos)
         print(f"Pesos extraídos: {len(pesos)}")
 
-        # 4. Cambiar a la pestaña de Dólares
-        print("Cambiando a la vista de Dólares...")
+        # 4. Cambiar a Dólares y esperar cambio real en el DOM
+        print("Buscando botón de Dólares...")
         try:
             elementos = page.query_selector_all("button, div, span, a")
-            target_usd = None
+            btn_usd = None
             
             for elem in elementos:
                 try:
                     txt = elem.inner_text().strip()
                     if re.search(r"^dólares|^dolares", txt, re.IGNORECASE):
-                        target_usd = elem
+                        btn_usd = elem
                         break
                 except Exception:
                     continue
 
-            if target_usd:
-                target_usd.evaluate("el => el.click()")
-                print("Clic realizado. Esperando actualización de la tabla de dólares...")
+            if btn_usd:
+                btn_usd.evaluate("el => el.click()")
+                print("Clic en Dólares realizado. Esperando actualización de la tabla...")
                 
-                # Espera extendida de 8 segundos para dar tiempo al renderizado de la tabla inferior
-                page.wait_for_timeout(8000)
-                
-                # Intentar esperar dinámicamente si aparece el texto 'USD'
-                try:
-                    page.wait_for_function("document.body.innerText.includes('USD')", timeout=5000)
-                except Exception:
-                    print("Tiempo de espera dinámico agotado, continuando con lectura...")
+                # Bucle de espera activa de hasta 12 segundos para detectar cambio a USD
+                usd_cargado = False
+                for intento in range(6):
+                    page.wait_for_timeout(2000)
+                    page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                    texto_actual = page.inner_text("body")
+                    
+                    if "USD" in texto_actual:
+                        usd_cargado = True
+                        print(f"Tabla de Dólares detectada con éxito en el intento {intento+1}.")
+                        break
 
-                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                page.wait_for_timeout(2000)
-                
                 texto_usd = page.inner_text("body")
                 usd_items = procesar_texto_seccion(texto_usd, "USD")
-                print(f"Dólares extraídos reales: {len(usd_items)}")
                 
-                for u in usd_items:
-                    todas_transacciones.append(u)
+                if usd_items and all(item["Moneda"] == "USD" or "USD" in item["Monto"] for item in usd_items):
+                    print(f"Dólares extraídos reales: {len(usd_items)}")
+                    for u in usd_items:
+                        todas_transacciones.append(u)
+                else:
+                    print("La tabla no cambió a USD a tiempo o no hay transacciones en dólares. Se omite para evitar duplicar pesos.")
             else:
                 print("No se encontró el botón de Dólares.")
         except Exception as e:
