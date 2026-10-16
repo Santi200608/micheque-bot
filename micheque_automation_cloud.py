@@ -17,7 +17,6 @@ def procesar_texto_seccion(texto, moneda_esperada):
     i = 0
     while i < len(lineas):
         linea = lineas[i]
-        # Detectar patrón de fecha DD/MM/YYYY
         if re.match(r"^\d{1,2}/\d{1,2}/\d{4}$", linea):
             try:
                 fecha = linea
@@ -72,7 +71,6 @@ def obtener_transacciones():
         page.goto(URL_MARKET, wait_until="networkidle")
         page.wait_for_timeout(5000)
 
-        # Scroll para renderizar
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         page.wait_for_timeout(2000)
 
@@ -86,7 +84,6 @@ def obtener_transacciones():
         # 4. Cambiar a Dólares
         print("Buscando botón de Dólares...")
         try:
-            # Buscar cualquier elemento visible que contenga la palabra Dólares o Dolares
             elementos = page.query_selector_all("button, div, span, a")
             target_usd = None
             
@@ -101,11 +98,9 @@ def obtener_transacciones():
                     continue
 
             if target_usd:
-                print("Botón de Dólares encontrado. Haciendo clic...")
                 target_usd.click(force=True)
-                
-                # Pausa de 7 segundos para permitir la actualización de la tabla inferior
-                page.wait_for_timeout(7000)
+                print("Clic en Dólares realizado.")
+                page.wait_for_timeout(6000)
                 page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                 page.wait_for_timeout(2000)
                 
@@ -117,9 +112,9 @@ def obtener_transacciones():
                     for u in usd_items:
                         todas_transacciones.append(u)
                 else:
-                    print("No hay transacciones en Dólares disponibles o la tabla no refrescó.")
+                    print("No se registraron transacciones en Dólares en esta vista.")
             else:
-                print("No se encontró el botón de Dólares en la interfaz.")
+                print("No se encontró la solapa de Dólares.")
         except Exception as e:
             print(f"Error al cambiar a Dólares: {e}")
 
