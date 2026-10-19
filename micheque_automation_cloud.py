@@ -17,6 +17,7 @@ def procesar_texto_seccion(texto, moneda_esperada):
     i = 0
     while i < len(lineas):
         linea = lineas[i]
+        # Detectar patrón de fecha DD/MM/YYYY
         if re.match(r"^\d{1,2}/\d{1,2}/\d{4}$", linea):
             try:
                 fecha = linea
@@ -29,6 +30,7 @@ def procesar_texto_seccion(texto, moneda_esperada):
                     es_usd = "USD" in monto
                     es_uys = "UY$" in monto
 
+                    # Si buscamos USD pero la tabla aún dice UY$, omitir esta fila
                     if moneda_esperada == "USD" and es_uys and not es_usd:
                         i += 4
                         continue
@@ -71,6 +73,7 @@ def obtener_transacciones():
         page.goto(URL_MARKET, wait_until="networkidle")
         page.wait_for_timeout(5000)
 
+        # Scroll para renderizar Pesos
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         page.wait_for_timeout(2000)
 
@@ -79,42 +82,31 @@ def obtener_transacciones():
         texto_pesos = page.inner_text("body")
         pesos = procesar_texto_seccion(texto_pesos, "UY$")
         todas_transacciones.extend(pesos)
-        print(f"Pesos extraídos: {len(pesos)}")
+        print(f"Pesos extraídos correctamente: {len(pesos)}")
 
         # 4. Cambiar a Dólares
-        print("Buscando botón de Dólares...")
+        print("Localizando solapa de Dólares...")
         try:
-            elementos = page.query_selector_all("button, div, span, a")
-            target_usd = None
+            # Buscar el elemento que contiene 'Dólares' o 'Dolares'
+            btn_usd = page.locator("button, div, a, span").filter(has_text=re.compile(r"Dólares|Dolares", re.I)).first
             
-            for elem in elementos:
-                try:
-                    txt = elem.inner_text().strip()
-                    if "dólares" in txt.lower() or "dolares" in txt.lower():
-                        if elem.is_visible():
-                            target_usd = elem
-                            break
-                except Exception:
-                    continue
-
-            if target_usd:
-                target_usd.click(force=True)
-                print("Clic en Dólares realizado.")
-                page.wait_for_timeout(6000)
+            if btn_usd.count() > 0:
+                print("Botón encontrado. Disparando clic...")
+                btn_usd.click(force=True)
+                
+                # Pausa de 8 segundos para garantizar el refresco del componente dinámico
+                page.wait_for_timeout(8000)
                 page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                 page.wait_for_timeout(2000)
                 
                 texto_usd = page.inner_text("body")
                 usd_items = procesar_texto_seccion(texto_usd, "USD")
                 
-                if usd_items and any("USD" in x["Monto"] or x["Moneda"] == "USD" for x in usd_items):
-                    print(f"Dólares extraídos reales: {len(usd_items)}")
-                    for u in usd_items:
-                        todas_transacciones.append(u)
-                else:
-                    print("No se registraron transacciones en Dólares en esta vista.")
+                print(f"Transacciones en Dólares detectadas: {len(usd_items)}")
+                for u in usd_items:
+                    todas_transacciones.append(u)
             else:
-                print("No se encontró la solapa de Dólares.")
+                print("No se encontró la solapa de Dólares en la pantalla.")
         except Exception as e:
             print(f"Error al cambiar a Dólares: {e}")
 
