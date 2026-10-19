@@ -30,7 +30,6 @@ def procesar_texto_seccion(texto, moneda_esperada):
                     es_usd = "USD" in monto
                     es_uys = "UY$" in monto
 
-                    # Si estamos buscando USD pero el renglón dice UY$, lo salteamos
                     if moneda_esperada == "USD" and es_uys and not es_usd:
                         i += 4
                         continue
@@ -68,7 +67,7 @@ def obtener_transacciones():
         page.keyboard.press("Enter")
         page.wait_for_timeout(4000)
         
-        # 2. Ir al mercado
+        # 2. Navegar al mercado
         print("Navegando al mercado...")
         page.goto(URL_MARKET, wait_until="networkidle")
         page.wait_for_timeout(5000)
@@ -84,43 +83,44 @@ def obtener_transacciones():
         todas_transacciones.extend(pesos)
         print(f"Pesos extraídos correctamente: {len(pesos)}")
 
-        # 4. Cambiar a Dólares
-        print("Localizando solapa de Dólares...")
+        # 4. Cambiar a Dólares buscando todos los elementos de Dólares
+        print("Cambiando vista a Dólares...")
         try:
-            # Buscar el botón por coincidencia de texto 'Dólares' o 'Dolares'
-            btn_usd = page.locator("button, div, a, span").filter(has_text=re.compile(r"Dólares|Dolares", re.I)).first
+            # Buscar todos los elementos que contengan la palabra Dólares/Dolares en la página
+            elementos_usd = page.query_selector_all("button, div, span, a")
             
-            if btn_usd.count() > 0:
-                print("Botón encontrado. Disparando clic...")
-                btn_usd.click(force=True)
-                
-                # Esperar hasta 12 segundos a que aparezca 'USD' o el título de la tabla de Dólares
-                tabla_usd_cargada = False
-                for intento in range(6):
-                    page.wait_for_timeout(2000)
-                    page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                    texto_temp = page.inner_text("body")
-                    if "USD" in texto_temp or "transacciones en Dólares" in texto_temp:
-                        tabla_usd_cargada = True
-                        print(f"Tabla de Dólares confirmada en la pantalla (intento {intento+1}).")
-                        break
-                
-                if not tabla_usd_cargada:
-                    print("Reintentando clic en la solapa de Dólares por evento JS...")
-                    btn_usd.evaluate("el => el.click()")
-                    page.wait_for_timeout(5000)
+            for elem in elementos_usd:
+                try:
+                    txt = elem.inner_text().strip()
+                    if "dólares" in txt.lower() or "dolares" in txt.lower():
+                        if elem.is_visible():
+                            # Forzar clic en todos los botones que se llamen Dólares (tanto filtro como tabla)
+                            elem.click(force=True)
+                            elem.evaluate("el => el.click()")
+                except Exception:
+                    continue
 
-                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                page.wait_for_timeout(2000)
-                
+            # Dar 8 segundos de espera para que la API responda
+            page.wait_for_timeout(8000)
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            page.wait_for_timeout(2000)
+
+            # Re-evaluar si la tabla ya tiene el texto USD o transacciones en dólares
+            texto_usd = page.inner_text("body")
+            
+            # Si aún no dice USD, forzar un scroll extra y reintento
+            if "USD" not in texto_usd:
+                print("Forzando actualización de la tabla inferior...")
+                page.keyboard.press("PageDown")
+                page.wait_for_timeout(3000)
                 texto_usd = page.inner_text("body")
-                usd_items = procesar_texto_seccion(texto_usd, "USD")
-                
-                print(f"Transacciones en Dólares detectadas: {len(usd_items)}")
-                for u in usd_items:
-                    todas_transacciones.append(u)
-            else:
-                print("No se encontró la solapa de Dólares en la pantalla.")
+
+            usd_items = procesar_texto_seccion(texto_usd, "USD")
+            print(f"Transacciones en Dólares detectadas: {len(usd_items)}")
+            
+            for u in usd_items:
+                todas_transacciones.append(u)
+
         except Exception as e:
             print(f"Error al cambiar a Dólares: {e}")
 
