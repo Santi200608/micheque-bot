@@ -30,7 +30,7 @@ def procesar_texto_seccion(texto, moneda_esperada):
                     es_usd = "USD" in monto
                     es_uys = "UY$" in monto
 
-                    # Si buscamos USD pero la tabla aún dice UY$, omitir esta fila
+                    # Si estamos buscando USD pero el renglón dice UY$, lo salteamos
                     if moneda_esperada == "USD" and es_uys and not es_usd:
                         i += 4
                         continue
@@ -68,7 +68,7 @@ def obtener_transacciones():
         page.keyboard.press("Enter")
         page.wait_for_timeout(4000)
         
-        # 2. Navegar al mercado
+        # 2. Ir al mercado
         print("Navegando al mercado...")
         page.goto(URL_MARKET, wait_until="networkidle")
         page.wait_for_timeout(5000)
@@ -87,15 +87,29 @@ def obtener_transacciones():
         # 4. Cambiar a Dólares
         print("Localizando solapa de Dólares...")
         try:
-            # Buscar el elemento que contiene 'Dólares' o 'Dolares'
+            # Buscar el botón por coincidencia de texto 'Dólares' o 'Dolares'
             btn_usd = page.locator("button, div, a, span").filter(has_text=re.compile(r"Dólares|Dolares", re.I)).first
             
             if btn_usd.count() > 0:
                 print("Botón encontrado. Disparando clic...")
                 btn_usd.click(force=True)
                 
-                # Pausa de 8 segundos para garantizar el refresco del componente dinámico
-                page.wait_for_timeout(8000)
+                # Esperar hasta 12 segundos a que aparezca 'USD' o el título de la tabla de Dólares
+                tabla_usd_cargada = False
+                for intento in range(6):
+                    page.wait_for_timeout(2000)
+                    page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                    texto_temp = page.inner_text("body")
+                    if "USD" in texto_temp or "transacciones en Dólares" in texto_temp:
+                        tabla_usd_cargada = True
+                        print(f"Tabla de Dólares confirmada en la pantalla (intento {intento+1}).")
+                        break
+                
+                if not tabla_usd_cargada:
+                    print("Reintentando clic en la solapa de Dólares por evento JS...")
+                    btn_usd.evaluate("el => el.click()")
+                    page.wait_for_timeout(5000)
+
                 page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                 page.wait_for_timeout(2000)
                 
