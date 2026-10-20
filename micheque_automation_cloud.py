@@ -53,76 +53,78 @@ def procesar_texto_seccion(texto, moneda_esperada):
 def extraer_detalles_desplegados(page, moneda):
     detalles_capturados = []
     try:
-        page.wait_for_timeout(2000)
+        page.wait_for_timeout(3000)
         
-        # 1. Hacer clic en todos los elementos que puedan desplegar información en la lista
-        botones_desplegar = page.query_selector_all("span, button, div.v-expansion-panel-title, .fa-chevron-down, [class*='chevron']")
-        for btn in botones_desplegar:
+        # 1. Expandir todas las tarjetas haciendo clic en los botones o flechas
+        page.evaluate("""() => {
+            const elementos = document.querySelectorAll('*');
+            elementos.forEach(el => {
+                if (el.children.length === 0 && (el.innerText.includes('Detalles') || el.innerText.includes('TIR') || el.className.includes('chevron') || el.className.includes('arrow'))) {
+                    el.click();
+                }
+            });
+        }""")
+        page.wait_for_timeout(1500)
+
+        # 2. Localizar elementos clicables que abran el detalle
+        elementos_detalles = page.query_selector_all("a, button, span, div")
+        elementos_validos = []
+        for e in elementos_detalles:
             try:
-                if btn.is_visible():
-                    btn.click(force=True)
-                    page.wait_for_timeout(300)
+                txt = e.inner_text().strip()
+                if "detalles de la operación" in txt.lower() or "detalle" in txt.lower():
+                    if e.is_visible():
+                        elementos_validos.append(e)
             except Exception:
                 continue
 
-        page.wait_for_timeout(1000)
+        print(f"Se encontraron {len(elementos_validos)} enlaces de detalles para {moneda}")
 
-        # 2. Buscar enlaces o botones de "Detalles de la operación"
-        elementos_detalles = page.locator("text=/Detalles de la operación/i")
-        cantidad = elementos_detalles.count()
-        print(f"Se encontraron {cantidad} enlaces de detalles para {moneda}")
-
-        for i in range(cantidad):
+        for i, elem in enumerate(elementos_validos):
             try:
-                elem = elementos_detalles.nth(i)
-                if elem.is_visible():
-                    elem.click(force=True)
-                    page.wait_for_timeout(2000)  # Esperar apertura del modal
+                elem.click(force=True)
+                page.wait_for_timeout(2000)
 
-                    # Capturar el texto completo del diálogo/modal
-                    modal = page.locator("div[role='dialog'], div.v-dialog, .modal-content, body")
-                    modal_text = modal.inner_text()
+                # Extraer texto del diálogo emergente o del body
+                modal_text = page.evaluate("() => document.body.innerText")
 
-                    # Expresiones regulares para extraer los campos del modal
-                    librador = re.search(r"(?:Nombre|Deudor|Librador)\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
-                    razon = re.search(r"Razón social\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
-                    rut = re.search(r"RUT\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
-                    bcu = re.search(r"(\d[A-Z])\s*\n\s*BCU", modal_text, re.IGNORECASE)
-                    monto = re.search(r"Monto\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
-                    solicitado = re.search(r"Solicitado\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
-                    vencimiento = re.search(r"Vencimiento\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
-                    cobrados = re.search(r"Cobrados\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
-                    vigentes = re.search(r"Vigentes\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
-                    banco = re.search(r"Bancos que maneja\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
-                    ventas = re.search(r"Ventas\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
-                    ubicacion = re.search(r"Dirección\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                librador = re.search(r"(?:Nombre|Deudor|Librador)\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                razon = re.search(r"Razón social\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                rut = re.search(r"RUT\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                bcu = re.search(r"(\d[A-Z])\s*\n\s*BCU", modal_text, re.IGNORECASE)
+                monto = re.search(r"Monto\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                solicitado = re.search(r"Solicitado\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                vencimiento = re.search(r"Vencimiento\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                cobrados = re.search(r"Cobrados\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                vigentes = re.search(r"Vigentes\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                banco = re.search(r"Bancos que maneja\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                ventas = re.search(r"Ventas\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                ubicacion = re.search(r"Dirección\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
 
-                    item = {
-                        "moneda": moneda,
-                        "librador": librador.group(1).strip() if librador else "",
-                        "razonSocial": razon.group(1).strip() if razon else "",
-                        "rut": rut.group(1).strip() if rut else "",
-                        "bcu": bcu.group(1).strip() if bcu else "",
-                        "tipo": "Transferencia Programada" if "Transferencia Programada" in modal_text else "Cheque/Factura",
-                        "vencimiento": vencimiento.group(1).strip() if vencimiento else "",
-                        "monto": monto.group(1).strip() if monto else "",
-                        "solicitado": solicitado.group(1).strip() if solicitado else "",
-                        "cobrados": cobrados.group(1).strip() if cobrados else "",
-                        "vigentes": vigentes.group(1).strip() if vigentes else "",
-                        "descontadoVigente": "-",
-                        "bancosVendedor": banco.group(1).strip() if banco else "",
-                        "ventas": ventas.group(1).strip() if ventas else "",
-                        "ubicacion": ubicacion.group(1).strip() if ubicacion else ""
-                    }
-                    
-                    if item["librador"] or item["rut"]:
-                        detalles_capturados.append(item)
+                item = {
+                    "moneda": moneda,
+                    "librador": librador.group(1).strip() if librador else "",
+                    "razonSocial": razon.group(1).strip() if razon else "",
+                    "rut": rut.group(1).strip() if rut else "",
+                    "bcu": bcu.group(1).strip() if bcu else "",
+                    "tipo": "Transferencia Programada" if "Transferencia Programada" in modal_text else "Cheque/Factura",
+                    "vencimiento": vencimiento.group(1).strip() if vencimiento else "",
+                    "monto": monto.group(1).strip() if monto else "",
+                    "solicitado": solicitado.group(1).strip() if solicitado else "",
+                    "cobrados": cobrados.group(1).strip() if cobrados else "",
+                    "vigentes": vigentes.group(1).strip() if vigentes else "",
+                    "descontadoVigente": "-",
+                    "bancosVendedor": banco.group(1).strip() if banco else "",
+                    "ventas": ventas.group(1).strip() if ventas else "",
+                    "ubicacion": ubicacion.group(1).strip() if ubicacion else ""
+                }
+                
+                if item["librador"] or item["rut"]:
+                    detalles_capturados.append(item)
 
-                    # Cierra el modal emergente antes de seguir con el siguiente
-                    page.keyboard.press("Escape")
-                    page.wait_for_timeout(800)
+                page.keyboard.press("Escape")
+                page.wait_for_timeout(500)
             except Exception as ex:
-                print(f"Error procesando modal {i}: {ex}")
                 page.keyboard.press("Escape")
                 continue
 
