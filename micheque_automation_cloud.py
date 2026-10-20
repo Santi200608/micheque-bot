@@ -55,24 +55,26 @@ def extraer_detalles_desplegados(page, moneda):
     try:
         page.wait_for_timeout(3000)
         
-        # 1. Expandir todas las tarjetas haciendo clic en los botones o flechas
+        # 1. Expandir desplegables de forma totalmente segura sin errores JS
         page.evaluate("""() => {
             const elementos = document.querySelectorAll('*');
             elementos.forEach(el => {
-                if (el.children.length === 0 && (el.innerText.includes('Detalles') || el.innerText.includes('TIR') || el.className.includes('chevron') || el.className.includes('arrow'))) {
-                    el.click();
+                const txt = (el.innerText || '').toLowerCase();
+                const cls = (el.className && typeof el.className === 'string') ? el.className.toLowerCase() : '';
+                if (el.children.length === 0 && (txt.includes('detalles') || txt.includes('tir') || cls.includes('chevron') || cls.includes('arrow'))) {
+                    try { el.click(); } catch(e){}
                 }
             });
         }""")
         page.wait_for_timeout(1500)
 
-        # 2. Localizar elementos clicables que abran el detalle
+        # 2. Localizar elementos clicables que abran el modal de detalles
         elementos_detalles = page.query_selector_all("a, button, span, div")
         elementos_validos = []
         for e in elementos_detalles:
             try:
-                txt = e.inner_text().strip()
-                if "detalles de la operación" in txt.lower() or "detalle" in txt.lower():
+                txt = (e.inner_text() or '').strip().lower()
+                if "detalles de la operación" in txt or "detalle" in txt:
                     if e.is_visible():
                         elementos_validos.append(e)
             except Exception:
@@ -85,7 +87,7 @@ def extraer_detalles_desplegados(page, moneda):
                 elem.click(force=True)
                 page.wait_for_timeout(2000)
 
-                # Extraer texto del diálogo emergente o del body
+                # Capturar el texto de la ventana modal emergente
                 modal_text = page.evaluate("() => document.body.innerText")
 
                 librador = re.search(r"(?:Nombre|Deudor|Librador)\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
@@ -124,7 +126,7 @@ def extraer_detalles_desplegados(page, moneda):
 
                 page.keyboard.press("Escape")
                 page.wait_for_timeout(500)
-            except Exception as ex:
+            except Exception:
                 page.keyboard.press("Escape")
                 continue
 
@@ -174,7 +176,7 @@ def obtener_transacciones():
             elementos_usd = page.query_selector_all("button, div, span, a")
             for elem in elementos_usd:
                 try:
-                    txt = elem.inner_text().strip()
+                    txt = (elem.inner_text() or '').strip()
                     if "dólares" in txt.lower() or "dolares" in txt.lower():
                         if elem.is_visible():
                             elem.click(force=True)
