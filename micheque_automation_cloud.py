@@ -17,7 +17,6 @@ def procesar_texto_seccion(texto, moneda_esperada):
     i = 0
     while i < len(lineas):
         linea = lineas[i]
-        # Detectar patrón de fecha DD/MM/YYYY
         if re.match(r"^\d{1,2}/\d{1,2}/\d{4}$", linea):
             try:
                 fecha = linea
@@ -72,7 +71,6 @@ def obtener_transacciones():
         page.goto(URL_MARKET, wait_until="networkidle")
         page.wait_for_timeout(5000)
 
-        # Scroll para renderizar Pesos
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         page.wait_for_timeout(2000)
 
@@ -83,10 +81,9 @@ def obtener_transacciones():
         todas_transacciones.extend(pesos)
         print(f"Pesos extraídos correctamente: {len(pesos)}")
 
-        # 4. Cambiar a Dólares buscando todos los elementos de Dólares
+        # 4. Cambiar a Dólares
         print("Cambiando vista a Dólares...")
         try:
-            # Buscar todos los elementos que contengan la palabra Dólares/Dolares en la página
             elementos_usd = page.query_selector_all("button, div, span, a")
             
             for elem in elementos_usd:
@@ -94,21 +91,17 @@ def obtener_transacciones():
                     txt = elem.inner_text().strip()
                     if "dólares" in txt.lower() or "dolares" in txt.lower():
                         if elem.is_visible():
-                            # Forzar clic en todos los botones que se llamen Dólares (tanto filtro como tabla)
                             elem.click(force=True)
                             elem.evaluate("el => el.click()")
                 except Exception:
                     continue
 
-            # Dar 8 segundos de espera para que la API responda
             page.wait_for_timeout(8000)
             page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             page.wait_for_timeout(2000)
 
-            # Re-evaluar si la tabla ya tiene el texto USD o transacciones en dólares
             texto_usd = page.inner_text("body")
             
-            # Si aún no dice USD, forzar un scroll extra y reintento
             if "USD" not in texto_usd:
                 print("Forzando actualización de la tabla inferior...")
                 page.keyboard.press("PageDown")
