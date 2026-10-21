@@ -66,34 +66,29 @@ def extraer_oportunidades_exactas(page, moneda):
     detalles_capturados = []
     try:
         page.wait_for_timeout(3000)
-        
-        # 1. Delimitar el contenedor principal del mercado (descarta el pie de página e historial)
-        mercado_container = page.query_selector(".v-window-item--active, .market-content, main")
-        if not mercado_container:
-            mercado_container = page
 
-        # 2. Desplegar tarjetas principales para ver TIR, Margen, etc.
+        # 1. Expandir desplegables
         page.evaluate("""() => {
             const btns = document.querySelectorAll('.v-expansion-panel-title, [class*="chevron"], [class*="arrow"]');
             btns.forEach(b => { try { b.click(); } catch(e){} });
         }""")
-        page.wait_for_timeout(1500)
+        page.wait_for_timeout(2000)
 
-        # 3. Obtener las tarjetas individuales
-        tarjetas = mercado_container.query_selector_all(".v-expansion-panel, .v-card")
+        # 2. Buscar todas las tarjetas en la página directamente
+        tarjetas = page.query_selector_all(".v-expansion-panel, .v-card")
         print(f"Tarjetas detectadas para {moneda}: {len(tarjetas)}")
 
         for tarjeta in tarjetas:
             try:
                 txt_tarjeta = tarjeta.inner_text()
                 
-                # Descartar elementos de encabezado o filtros
+                # Filtrar encabezados, paneles de control o historiales inferiores
                 if "disponible para ofertas" in txt_tarjeta.lower() or "filtrar por" in txt_tarjeta.lower():
                     continue
                 if "librador" in txt_tarjeta.lower() and "valor" in txt_tarjeta.lower() and len(txt_tarjeta.split('\n')) < 5:
                     continue
 
-                # A) Extraer campos de la tarjeta principal (Columnas C a M)
+                # Extraer campos de la tarjeta
                 librador_match = re.search(r"([A-Z0-9\s\.\-]{3,40})\n(?:Cheque|Transferencia Programada|Factura)", txt_tarjeta)
                 valor_match = re.search(r"([\d\.\,]{3,15})\n(?:en \d+ días|\d{2}/\d{2}/\d{4})", txt_tarjeta)
                 vto_match = re.search(r"(en \d+ días|\d{2}/\d{2}/\d{4})", txt_tarjeta)
@@ -110,7 +105,7 @@ def extraer_oportunidades_exactas(page, moneda):
                 if lib_val == "-":
                     continue
 
-                # B) Clic en 'Detalles de la operación' dentro de la tarjeta
+                # Abrir Modal
                 btn_detalle = tarjeta.query_selector("text=/Detalles de la operación/i, text=/Detalle/i, a, button")
                 
                 det_valor = det_banco = det_emision = det_vto = "-"
@@ -120,11 +115,10 @@ def extraer_oportunidades_exactas(page, moneda):
                 if btn_detalle and btn_detalle.is_visible():
                     btn_detalle.click(force=True)
                     
-                    # Sincronización explícita: esperar a que aparezca la ventana emergente
                     try:
-                        page.wait_for_selector(".v-dialog--active, div[role='dialog'], .v-overlay__content", timeout=4000)
-                        modal = page.query_selector(".v-dialog--active, div[role='dialog'], .v-overlay__content")
-                        modal_txt = modal.inner_text() if modal else ""
+                        page.wait_for_timeout(2000)
+                        modal = page.query_selector("div[role='dialog'], .v-overlay__content, .modal-content")
+                        modal_txt = modal.inner_text() if modal else page.evaluate("() => document.body.innerText")
 
                         if modal_txt:
                             m_val = re.search(r"Valor\s*\n?\s*([UY$USD\s\d\.\,]+)", modal_txt, re.IGNORECASE)
@@ -167,7 +161,7 @@ def extraer_oportunidades_exactas(page, moneda):
                     page.keyboard.press("Escape")
                     page.wait_for_timeout(500)
 
-                # Formatear dirección y departamento
+                # Dirección y Departamento
                 if "," in det_dir and det_depto == "-":
                     partes = det_dir.split(",")
                     det_dir = partes[0].strip()
