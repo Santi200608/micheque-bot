@@ -64,111 +64,126 @@ def extraer_detalles_desplegados(page, moneda):
     try:
         page.wait_for_timeout(3000)
         
-        # 1. Expandir todas las tarjetas en pantalla
+        # 1. Forzar la apertura de todos los desplegables via JS
         page.evaluate("""() => {
-            const btns = document.querySelectorAll('*');
-            btns.forEach(b => {
-                const txt = (b.innerText || '').toLowerCase();
-                if (txt.includes('detalles') || txt.includes('tir') || (b.className && typeof b.className === 'string' && (b.className.includes('chevron') || b.className.includes('arrow')))) {
-                    try { b.click(); } catch(e){}
+            const elms = document.querySelectorAll('*');
+            elms.forEach(el => {
+                if (el.children.length === 0) {
+                    const txt = (el.innerText || '').toLowerCase();
+                    if (txt.includes('detalles') || txt.includes('tir') || txt.includes('vencimiento')) {
+                        try { el.click(); } catch(e){}
+                    }
                 }
             });
         }""")
         page.wait_for_timeout(2000)
 
-        # 2. Buscar enlaces de "Detalles de la operación"
-        elementos = page.locator("text=/Detalles de la operación/i, text=/Detalle de la operacion/i")
-        count = elementos.count()
-        print(f"Enlaces de detalles encontrados para {moneda}: {count}")
+        # 2. Extraer todos los bloques de texto de los modales/tarjetas presentes en el DOM
+        bloques_texto = page.evaluate("""() => {
+            const resultados = [];
+            
+            // Buscar todos los botones o enlaces que digan 'Detalles de la operación'
+            const links = Array.from(document.querySelectorAll('*')).filter(el => 
+                el.children.length === 0 && (el.innerText || '').toLowerCase().includes('detalles de la operación')
+            );
 
-        for i in range(count):
+            links.forEach(link => {
+                try {
+                    link.click();
+                } catch(e){}
+            });
+
+            // Retornar los textos de los modales y tarjetas
+            const modales = document.querySelectorAll('.v-dialog, div[role="dialog"], .modal-content, .v-expansion-panel-text, .v-card');
+            modales.forEach(m => {
+                if (m.innerText && m.innerText.length > 50) {
+                    resultados.push(m.innerText);
+                }
+            });
+
+            if (resultados.length === 0) {
+                resultados.push(document.body.innerText);
+            }
+
+            return resultados;
+        }""")
+
+        print(f"Bloques de contenido capturados para {moneda}: {len(bloques_texto)}")
+
+        for modal_text in bloques_texto:
             try:
-                elem = elementos.nth(i)
-                if elem.is_visible():
-                    elem.click(force=True)
-                    page.wait_for_timeout(2500)
+                librador_m = re.search(r"(?:Nombre|Deudor|Librador)\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                razon_m = re.search(r"Razón social\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                rut_m = re.search(r"RUT\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                bcu_m = re.search(r"(\d[A-Z])\s*\n\s*BCU", modal_text, re.IGNORECASE)
+                
+                val_m = re.search(r"Valor\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                if not val_m:
+                    val_m = re.search(r"Monto\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
 
-                    # Obtener texto del modal
-                    modal = page.query_selector("div[role='dialog'], .v-dialog, .modal-content, .v-overlay__content")
-                    modal_text = modal.inner_text() if modal else page.evaluate("() => document.body.innerText")
+                solic_m = re.search(r"Solicitado\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                banco_m = re.search(r"Banco\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                emision_m = re.search(r"Emisión\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                vto_m = re.search(r"Vencimiento\s*\n\s*(\d{2}/\d{2}/\d{4}|en \d+ días|[^\n]+)", modal_text, re.IGNORECASE)
 
-                    # Extraer campos del modal emergente
-                    librador_m = re.search(r"(?:Nombre|Librador)\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
-                    razon_m = re.search(r"Razón social\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
-                    rut_m = re.search(r"RUT\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
-                    bcu_m = re.search(r"(\d[A-Z])\s*\n\s*BCU", modal_text, re.IGNORECASE)
-                    
-                    val_m = re.search(r"Valor\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
-                    if not val_m:
-                        val_m = re.search(r"Monto\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                dir_m = re.search(r"Dirección\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                dir_txt = limpiar(dir_m.group(1) if dir_m else "")
+                depto_txt = ""
+                if "," in dir_txt:
+                    partes = dir_txt.split(",")
+                    dir_txt = partes[0].strip()
+                    depto_txt = partes[1].strip()
+                else:
+                    depto_m = re.search(r"Departamento\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                    depto_txt = limpiar(depto_m.group(1) if depto_m else "")
 
-                    solic_m = re.search(r"Solicitado\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
-                    banco_m = re.search(r"Banco\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
-                    emision_m = re.search(r"Emisión\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
-                    vto_m = re.search(r"Vencimiento\s*\n\s*(\d{2}/\d{2}/\d{4}|en \d+ días|[^\n]+)", modal_text, re.IGNORECASE)
+                ind_m = re.search(r"Industria\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                cob_m = re.search(r"Cobrados\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                vig_m = re.search(r"Vigentes\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                desc_m = re.search(r"Descontado vigente\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                
+                bman_m = re.search(r"Bancos que maneja\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                ven_m = re.search(r"Ventas\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
 
-                    dir_m = re.search(r"Dirección\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
-                    dir_txt = limpiar(dir_m.group(1) if dir_m else "")
-                    depto_txt = ""
-                    if "," in dir_txt:
-                        partes = dir_txt.split(",")
-                        dir_txt = partes[0].strip()
-                        depto_txt = partes[1].strip()
-                    else:
-                        depto_m = re.search(r"Departamento\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
-                        depto_txt = limpiar(depto_m.group(1) if depto_m else "")
+                lib_nombre = limpiar(librador_m.group(1) if librador_m else "")
+                lib_razon = limpiar(razon_m.group(1) if razon_m else "")
+                librador_final = lib_nombre if lib_nombre else lib_razon
 
-                    ind_m = re.search(r"Industria\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
-                    cob_m = re.search(r"Cobrados\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
-                    vig_m = re.search(r"Vigentes\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
-                    desc_m = re.search(r"Descontado vigente\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
-                    
-                    bman_m = re.search(r"Bancos que maneja\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
-                    ven_m = re.search(r"Ventas\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                if not librador_final or librador_final.lower() in TITULOS_A_IGNORAR:
+                    continue
 
-                    lib_nombre = limpiar(librador_m.group(1) if librador_m else "")
-                    lib_razon = limpiar(razon_m.group(1) if razon_m else "")
-                    librador_final = lib_nombre if lib_nombre else lib_razon
+                item = {
+                    "moneda": moneda,
+                    "librador": librador_final,
+                    "valor": limpiar(val_m.group(1) if val_m else ""),
+                    "vto": limpiar(vto_m.group(1) if vto_m else ""),
+                    "solicitado": limpiar(solic_m.group(1) if solic_m else ""),
+                    "margenNeto": "-",
+                    "tirNeta": "-",
+                    "tipo": "Transferencia Programada" if "Transferencia Programada" in modal_text else "Cheque",
+                    "bcu": limpiar(bcu_m.group(1) if bcu_m else ""),
+                    "cobradoUSD": "-",
+                    "bancosATransferir": limpiar(banco_m.group(1) if banco_m else "-", "-"),
+                    "mejorOferta": "-",
+                    "detValor": limpiar(val_m.group(1) if val_m else ""),
+                    "detBanco": limpiar(banco_m.group(1) if banco_m else ""),
+                    "detEmision": limpiar(emision_m.group(1) if emision_m else ""),
+                    "detVencimiento": limpiar(vto_m.group(1) if vto_m else ""),
+                    "detNombre": lib_nombre,
+                    "detRazonSocial": lib_razon,
+                    "detRut": limpiar(rut_m.group(1) if rut_m else ""),
+                    "detDireccion": dir_txt,
+                    "detDepartamento": depto_txt,
+                    "detIndustria": limpiar(ind_m.group(1) if ind_m else ""),
+                    "detCobrados": limpiar(cob_m.group(1) if cob_m else "-", "-"),
+                    "detVigentes": limpiar(vig_m.group(1) if vig_m else ""),
+                    "detDescontadoVigente": limpiar(desc_m.group(1) if desc_m else "-", "-"),
+                    "detBancosManeja": limpiar(bman_m.group(1) if bman_m else ""),
+                    "detVentas": limpiar(ven_m.group(1) if ven_m else "")
+                }
 
-                    item = {
-                        "moneda": moneda,
-                        "librador": librador_final,
-                        "valor": limpiar(val_m.group(1) if val_m else ""),
-                        "vto": limpiar(vto_m.group(1) if vto_m else ""),
-                        "solicitado": limpiar(solic_m.group(1) if solic_m else ""),
-                        "margenNeto": "-",
-                        "tirNeta": "-",
-                        "tipo": "Transferencia Programada" if "Transferencia Programada" in modal_text else "Cheque",
-                        "bcu": limpiar(bcu_m.group(1) if bcu_m else ""),
-                        "cobradoUSD": "-",
-                        "bancosATransferir": limpiar(banco_m.group(1) if banco_m else "-", "-"),
-                        "mejorOferta": "-",
-                        "detValor": limpiar(val_m.group(1) if val_m else ""),
-                        "detBanco": limpiar(banco_m.group(1) if banco_m else ""),
-                        "detEmision": limpiar(emision_m.group(1) if emision_m else ""),
-                        "detVencimiento": limpiar(vto_m.group(1) if vto_m else ""),
-                        "detNombre": lib_nombre,
-                        "detRazonSocial": lib_razon,
-                        "detRut": limpiar(rut_m.group(1) if rut_m else ""),
-                        "detDireccion": dir_txt,
-                        "detDepartamento": depto_txt,
-                        "detIndustria": limpiar(ind_m.group(1) if ind_m else ""),
-                        "detCobrados": limpiar(cob_m.group(1) if cob_m else "-", "-"),
-                        "detVigentes": limpiar(vig_m.group(1) if vig_m else ""),
-                        "detDescontadoVigente": limpiar(desc_m.group(1) if desc_m else "-", "-"),
-                        "detBancosManeja": limpiar(bman_m.group(1) if bman_m else ""),
-                        "detVentas": limpiar(ven_m.group(1) if ven_m else "")
-                    }
-
-                    if item["librador"] or item["detRut"] or item["detRazonSocial"]:
-                        detalles_capturados.append(item)
-
-                    page.keyboard.press("Escape")
-                    page.wait_for_timeout(800)
-
+                detalles_capturados.append(item)
             except Exception:
-                page.keyboard.press("Escape")
-                page.wait_for_timeout(500)
                 continue
 
     except Exception as e:
