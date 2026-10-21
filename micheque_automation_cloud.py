@@ -10,6 +10,16 @@ WEBHOOK_URL = os.environ.get("GOOGLE_SHEET_ID")
 URL_LOGIN = "https://micheque.uy/login"
 URL_MARKET = "https://micheque.uy/market"
 
+TITULOS_A_IGNORAR = ["valor", "vencimiento", "solicitado", "margen neto", "tir neta", "nombre", "razón social", "rut", "dirección", "departamento", "industria", "cobrados", "vigentes", "descontado vigente", "bancos que maneja", "ventas"]
+
+def limpiar_valor(texto, default=""):
+    if not texto:
+        return default
+    txt = texto.strip()
+    if txt.lower() in TITULOS_A_IGNORAR:
+        return default
+    return txt
+
 def procesar_texto_seccion(texto, moneda_esperada):
     transacciones = []
     lineas = [l.strip() for l in texto.split("\n") if l.strip() != ""]
@@ -54,7 +64,7 @@ def extraer_detalles_desplegados(page, moneda):
     try:
         page.wait_for_timeout(3000)
         
-        # Desplegar tarjetas principales (flechas C, I, J, D, E, L, etc.)
+        # 1. Expandir las filas/tarjetas principales
         page.evaluate("""() => {
             const elementos = document.querySelectorAll('*');
             elementos.forEach(el => {
@@ -67,7 +77,7 @@ def extraer_detalles_desplegados(page, moneda):
         }""")
         page.wait_for_timeout(1500)
 
-        # Buscar enlaces de "Detalles de la operación ->"
+        # 2. Localizar enlaces específicos de "Detalles de la operación"
         elementos_detalles = page.query_selector_all("a, button, span, div")
         elementos_validos = []
         for e in elementos_detalles:
@@ -86,81 +96,111 @@ def extraer_detalles_desplegados(page, moneda):
                 elem.click(force=True)
                 page.wait_for_timeout(2000)
 
-                modal_text = page.evaluate("() => document.body.innerText")
+                # AISLAMIENTO: Obtener ÚNICAMENTE el texto del modal flotante activo
+                modal_element = page.query_selector("div[role='dialog'], div.v-dialog, div.modal-content, .v-overlay__content")
+                if modal_element:
+                    modal_text = modal_element.inner_text()
+                else:
+                    modal_text = page.evaluate("() => document.body.innerText")
 
-                # Extracción según tus letras A -> AB
-                librador = re.search(r"(?:Librador|Nombre)\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
-                valor = re.search(r"Valor\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
-                vto = re.search(r"Vencimiento\s*\n\s*(en \d+ días|[^\n]+)", modal_text, re.IGNORECASE)
-                solicitado = re.search(r"Solicitado\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
-                margen = re.search(r"Margen [Nn]eto\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
-                tir = re.search(r"TIR [Nn]eta\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
-                tipo = re.search(r"(Cheque|Transferencia Programada|Factura)", modal_text, re.IGNORECASE)
-                bcu = re.search(r"(\d[A-Z])\s*\n\s*BCU", modal_text, re.IGNORECASE)
-                cobrado_usd = re.search(r"Cobrado USD\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
-                bancos_trans = re.search(r"Bancos a transferir\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
-                mejor_oferta = re.search(r"(La mejor oferta es de[^\n]+)", modal_text, re.IGNORECASE)
+                # Extraer datos descartando palabras que sean títulos
+                nom = re.search(r"Nombre\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                raz = re.search(r"Razón social\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                librador_val = limpiar_valor(nom.group(1) if nom else (raz.group(1) if raz else ""))
 
-                # Detalles de la operación (Modal N a Q)
-                det_valor = re.search(r"Datos del (?:cheque|factura|documento)\s*\n\s*Valor\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
-                if not det_valor:
-                    det_valor = re.search(r"Valor\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                # Si capturó un título genérico en lugar de la empresa, omitir
+                if not librador_val or librador_val.lower() in TITULOS_A_IGNORAR:
+                    page.keyboard.press("Escape")
+                    page.wait_for_timeout(500)
+                    continue
+
+                monto_solic = re.search(r"Solicitado\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                val_m = re.search(r"Monto\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                vto_dias = re.search(r"Vencimiento\s*\n\s*(en \d+ días|[^\n]+)", modal_text, re.IGNORECASE)
+                bcu_m = re.search(r"(\d[A-Z])\s*\n\s*BCU", modal_text, re.IGNORECASE)
+
+                # Banco a transferir (filtrando los botones 'Comprar' u 'Ofertar')
+                banco_trans = re.search(r"Bancos a transferir\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                banco_trans_val = limpiar_valor(banco_trans.group(1) if banco_trans else "-", "-")
+                if banco_trans_val.lower() in ["comprar", "ofertar", ""]:
+                    banco_trans_val = "-"
+
+                cobrado_usd_m = re.search(r"Cobrada USD\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+
+                # Modal: Detalles de la Operación (N a Q)
+                det_val = re.search(r"Monto\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
                 det_banco = re.search(r"Banco\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
                 det_emision = re.search(r"Emisión\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
-                det_vencimiento = re.search(r"Vencimiento\s*\n\s*(\d{2}/\d{2}/\d{4})", modal_text, re.IGNORECASE)
+                det_vto = re.search(r"Vencimiento\s*\n\s*(\d{2}/\d{2}/\d{4})", modal_text, re.IGNORECASE)
 
-                # Datos del Librador (Modal R a Z)
-                det_nombre = re.search(r"Nombre\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
-                det_razon = re.search(r"Razón social\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                # Modal: Datos del Librador (R a Z)
+                det_nom = re.search(r"Nombre\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                det_raz = re.search(r"Razón social\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
                 det_rut = re.search(r"RUT\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
-                det_dir = re.search(r"Dirección\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
-                det_depto = re.search(r"Departamento\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+
+                det_dir_full = re.search(r"Dirección\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                dir_txt = limpiar_valor(det_dir_full.group(1) if det_dir_full else "")
+                depto_txt = ""
+                if "," in dir_txt:
+                    partes_dir = dir_txt.split(",")
+                    dir_txt = partes_dir[0].strip()
+                    depto_txt = partes_dir[1].strip()
+                else:
+                    det_depto = re.search(r"Departamento\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                    depto_txt = limpiar_valor(det_depto.group(1) if det_depto else "")
+
                 det_ind = re.search(r"Industria\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
                 det_cobrados = re.search(r"Cobrados\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
                 det_vigentes = re.search(r"Vigentes\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
-                det_descontado = re.search(r"Descontado vigente\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                det_desc = re.search(r"Descontado vigente\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
 
-                # Vendedor (Modal AA a AB)
+                # Modal: Vendedor (AA a AB)
                 det_bancos_man = re.search(r"Bancos que maneja\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
                 det_ventas = re.search(r"Ventas\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
 
                 item = {
                     "moneda": moneda,
-                    "librador": librador.group(1).strip() if librador else "",
-                    "valor": valor.group(1).strip() if valor else "",
-                    "vto": vto.group(1).strip() if vto else "",
-                    "solicitado": solicitado.group(1).strip() if solicitado else "",
-                    "margenNeto": margen.group(1).strip() if margen else "",
-                    "tirNeta": tir.group(1).strip() if tir else "",
-                    "tipo": tipo.group(1).strip() if tipo else "",
-                    "bcu": bcu.group(1).strip() if bcu else "",
-                    "cobradoUSD": cobrado_usd.group(1).strip() if cobrado_usd else "-",
-                    "bancosATransferir": bancos_trans.group(1).strip() if bancos_trans else "",
-                    "mejorOferta": mejor_oferta.group(1).strip() if mejor_oferta else "",
-                    "detValor": det_valor.group(1).strip() if det_valor else "",
-                    "detBanco": det_banco.group(1).strip() if det_banco else "",
-                    "detEmision": det_emision.group(1).strip() if det_emision else "",
-                    "detVencimiento": det_vencimiento.group(1).strip() if det_vencimiento else "",
-                    "detNombre": det_nombre.group(1).strip() if det_nombre else "",
-                    "detRazonSocial": det_razon.group(1).strip() if det_razon else "",
-                    "detRut": det_rut.group(1).strip() if det_rut else "",
-                    "detDireccion": det_dir.group(1).strip() if det_dir else "",
-                    "detDepartamento": det_depto.group(1).strip() if det_depto else "",
-                    "detIndustria": det_ind.group(1).strip() if det_ind else "",
-                    "detCobrados": det_cobrados.group(1).strip() if det_cobrados else "-",
-                    "detVigentes": det_vigentes.group(1).strip() if det_vigentes else "",
-                    "detDescontadoVigente": det_descontado.group(1).strip() if det_descontado else "-",
-                    "detBancosManeja": det_bancos_man.group(1).strip() if det_bancos_man else "",
-                    "detVentas": det_ventas.group(1).strip() if det_ventas else ""
+                    "librador": librador_val,
+                    "valor": limpiar_valor(val_m.group(1) if val_m else ""),
+                    "vto": limpiar_valor(vto_dias.group(1) if vto_dias else ""),
+                    "solicitado": limpiar_valor(monto_solic.group(1) if monto_solic else ""),
+                    "margenNeto": "-",
+                    "tirNeta": "-",
+                    "tipo": "Transferencia Programada" if "Transferencia Programada" in modal_text else "Cheque",
+                    "bcu": limpiar_valor(bcu_m.group(1) if bcu_m else ""),
+                    "cobradoUSD": limpiar_valor(cobrado_usd_m.group(1) if cobrado_usd_m else "-", "-"),
+                    "bancosATransferir": banco_trans_val,
+                    "mejorOferta": "-",
+                    "detValor": limpiar_valor(det_val.group(1) if det_val else ""),
+                    "detBanco": limpiar_valor(det_banco.group(1) if det_banco else ""),
+                    "detEmision": limpiar_valor(det_emision.group(1) if det_emision else ""),
+                    "detVencimiento": limpiar_valor(det_vto.group(1) if det_vto else ""),
+                    "detNombre": limpiar_valor(det_nom.group(1) if det_nom else ""),
+                    "detRazonSocial": limpiar_valor(det_raz.group(1) if det_raz else ""),
+                    "detRut": limpiar_valor(det_rut.group(1) if det_rut else ""),
+                    "detDireccion": dir_txt,
+                    "detDepartamento": depto_txt,
+                    "detIndustria": limpiar_valor(det_ind.group(1) if det_ind else ""),
+                    "detCobrados": limpiar_valor(det_cobrados.group(1) if det_cobrados else "-", "-"),
+                    "detVigentes": limpiar_valor(det_vigentes.group(1) if det_vigentes else ""),
+                    "detDescontadoVigente": limpiar_valor(det_desc.group(1) if det_desc else "-", "-"),
+                    "detBancosManeja": limpiar_valor(det_bancos_man.group(1) if det_bancos_man else ""),
+                    "detVentas": limpiar_valor(det_ventas.group(1) if det_ventas else "")
                 }
-                
-                if item["librador"] or item["detRut"] or item["detRazonSocial"]:
-                    detalles_capturados.append(item)
 
+                detalles_capturados.append(item)
+
+                # Forzar el cierre efectivo del modal antes del siguiente
+                btn_cerrar = page.query_selector("button.v-btn--icon, button.close, .modal-close")
+                if btn_cerrar and btn_cerrar.is_visible():
+                    btn_cerrar.click()
+                else:
+                    page.keyboard.press("Escape")
+                page.wait_for_timeout(800)
+
+            except Exception as ex:
                 page.keyboard.press("Escape")
                 page.wait_for_timeout(500)
-            except Exception:
-                page.keyboard.press("Escape")
                 continue
 
     except Exception as e:
