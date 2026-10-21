@@ -10,6 +10,16 @@ WEBHOOK_URL = os.environ.get("GOOGLE_SHEET_ID")
 URL_LOGIN = "https://micheque.uy/login"
 URL_MARKET = "https://micheque.uy/market"
 
+TITULOS_A_IGNORAR = ["valor", "vencimiento", "solicitado", "margen neto", "tir neta", "nombre", "razón social", "rut", "dirección", "departamento", "industria", "cobrados", "vigentes", "descontado vigente", "bancos que maneja", "ventas", "detalles de la operación"]
+
+def limpiar(txt, default=""):
+    if not txt:
+        return default
+    t = txt.strip()
+    if t.lower() in TITULOS_A_IGNORAR:
+        return default
+    return t
+
 def procesar_texto_seccion(texto, moneda_esperada):
     transacciones = []
     lineas = [l.strip() for l in texto.split("\n") if l.strip() != ""]
@@ -54,134 +64,111 @@ def extraer_detalles_desplegados(page, moneda):
     try:
         page.wait_for_timeout(3000)
         
-        # 1. Expandir desplegables en la lista principal
+        # 1. Expandir todas las tarjetas en pantalla
         page.evaluate("""() => {
-            const btns = document.querySelectorAll('.v-expansion-panel-title, [class*="chevron"], [class*="arrow"]');
-            btns.forEach(b => { try { b.click(); } catch(e){} });
+            const btns = document.querySelectorAll('*');
+            btns.forEach(b => {
+                const txt = (b.innerText || '').toLowerCase();
+                if (txt.includes('detalles') || txt.includes('tir') || (b.className && typeof b.className === 'string' && (b.className.includes('chevron') || b.className.includes('arrow')))) {
+                    try { b.click(); } catch(e){}
+                }
+            });
         }""")
-        page.wait_for_timeout(1500)
+        page.wait_for_timeout(2000)
 
-        # 2. Obtener todas las tarjetas/filas de oportunidades
-        filas = page.query_selector_all("div.v-expansion-panel, .v-card, tr, .opportunity-item")
-        print(f"Filas/Tarjetas encontradas para {moneda}: {len(filas)}")
+        # 2. Buscar enlaces de "Detalles de la operación"
+        elementos = page.locator("text=/Detalles de la operación/i, text=/Detalle de la operacion/i")
+        count = elementos.count()
+        print(f"Enlaces de detalles encontrados para {moneda}: {count}")
 
-        for fila in filas:
+        for i in range(count):
             try:
-                txt_fila = fila.inner_text()
-                
-                # Ignorar encabezados o elementos vacíos
-                if "librador" in txt_fila.lower() and "valor" in txt_fila.lower() and len(txt_fila.split('\n')) < 5:
-                    continue
+                elem = elementos.nth(i)
+                if elem.is_visible():
+                    elem.click(force=True)
+                    page.wait_for_timeout(2500)
 
-                # Extraer datos de la fila de la vista principal
-                librador = re.search(r"([A-Z0-9\s\.\-]{3,40})\n(?:Cheque|Transferencia|Factura)", txt_fila)
-                monto_val = re.search(r"([\d\.\,]{3,15})\n(?:en \d+ días|\d{2}/\d{2}/\d{4})", txt_fila)
-                vto_dias = re.search(r"(en \d+ días|\d{2}/\d{2}/\d{4})", txt_fila)
-                monto_solic = re.search(r"Solicitado\n?([\d\.\,]+)", txt_fila)
-                margen_neto = re.search(r"Margen neto\n?([\d\.\,]+)", txt_fila)
-                tir_neta = re.search(r"TIR neta\n?([\d\.\,\%]+)", txt_fila)
-                tipo_doc = re.search(r"(Cheque|Transferencia Programada|Factura)", txt_fila)
-                bcu_val = re.search(r"(\d[A-Z])", txt_fila)
-                banco_trans = re.search(r"(Santander|BROU|Itaú|BBVA|Scotiabank|HSBC|Bandes)", txt_fila, re.IGNORECASE)
+                    # Obtener texto del modal
+                    modal = page.query_selector("div[role='dialog'], .v-dialog, .modal-content, .v-overlay__content")
+                    modal_text = modal.inner_text() if modal else page.evaluate("() => document.body.innerText")
 
-                # Intentar hacer clic en 'Detalles de la operación' dentro de ESTA fila
-                btn_detalle = fila.query_selector("text=/Detalles de la operación/i, text=/Detalle/i, a, button")
-                
-                det_monto = det_banco = det_emision = det_vto = ""
-                det_nom = det_raz = det_rut = det_dir = det_depto = det_ind = ""
-                det_cob = det_vig = det_desc = det_bancos_man = det_ventas = ""
+                    # Extraer campos del modal emergente
+                    librador_m = re.search(r"(?:Nombre|Librador)\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                    razon_m = re.search(r"Razón social\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                    rut_m = re.search(r"RUT\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                    bcu_m = re.search(r"(\d[A-Z])\s*\n\s*BCU", modal_text, re.IGNORECASE)
+                    
+                    val_m = re.search(r"Valor\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                    if not val_m:
+                        val_m = re.search(r"Monto\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
 
-                if btn_detalle and btn_detalle.is_visible():
-                    btn_detalle.click(force=True)
-                    page.wait_for_timeout(2000)
+                    solic_m = re.search(r"Solicitado\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                    banco_m = re.search(r"Banco\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                    emision_m = re.search(r"Emisión\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                    vto_m = re.search(r"Vencimiento\s*\n\s*(\d{2}/\d{2}/\d{4}|en \d+ días|[^\n]+)", modal_text, re.IGNORECASE)
 
-                    # Leer SOLO el contenedor del modal abierto
-                    modal = page.query_selector("div[role='dialog'], .v-dialog, .v-overlay__content, .modal-content")
-                    txt_modal = modal.inner_text() if modal else page.evaluate("() => document.body.innerText")
+                    dir_m = re.search(r"Dirección\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                    dir_txt = limpiar(dir_m.group(1) if dir_m else "")
+                    depto_txt = ""
+                    if "," in dir_txt:
+                        partes = dir_txt.split(",")
+                        dir_txt = partes[0].strip()
+                        depto_txt = partes[1].strip()
+                    else:
+                        depto_m = re.search(r"Departamento\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                        depto_txt = limpiar(depto_m.group(1) if depto_m else "")
 
-                    # Extraer campos del modal
-                    dm = re.search(r"Monto\s*\n\s*([^\n]+)", txt_modal, re.IGNORECASE)
-                    db = re.search(r"Banco\s*\n\s*([^\n]+)", txt_modal, re.IGNORECASE)
-                    de = re.search(r"Emisión\s*\n\s*([^\n]+)", txt_modal, re.IGNORECASE)
-                    dv = re.search(r"Vencimiento\s*\n\s*(\d{2}/\d{2}/\d{4})", txt_modal, re.IGNORECASE)
+                    ind_m = re.search(r"Industria\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                    cob_m = re.search(r"Cobrados\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                    vig_m = re.search(r"Vigentes\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                    desc_m = re.search(r"Descontado vigente\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                    
+                    bman_m = re.search(r"Bancos que maneja\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
+                    ven_m = re.search(r"Ventas\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
 
-                    dn = re.search(r"Nombre\s*\n\s*([^\n]+)", txt_modal, re.IGNORECASE)
-                    dr = re.search(r"Razón social\s*\n\s*([^\n]+)", txt_modal, re.IGNORECASE)
-                    drut = re.search(r"RUT\s*\n\s*([^\n]+)", txt_modal, re.IGNORECASE)
-                    ddir = re.search(r"Dirección\s*\n\s*([^\n]+)", txt_modal, re.IGNORECASE)
-                    ddepto = re.search(r"Departamento\s*\n\s*([^\n]+)", txt_modal, re.IGNORECASE)
-                    dind = re.search(r"Industria\s*\n\s*([^\n]+)", txt_modal, re.IGNORECASE)
-                    dcob = re.search(r"Cobrados\s*\n\s*([^\n]+)", txt_modal, re.IGNORECASE)
-                    dvig = re.search(r"Vigentes\s*\n\s*([^\n]+)", txt_modal, re.IGNORECASE)
-                    ddesc = re.search(r"Descontado vigente\s*\n\s*([^\n]+)", txt_modal, re.IGNORECASE)
-                    dbman = re.search(r"Bancos que maneja\s*\n\s*([^\n]+)", txt_modal, re.IGNORECASE)
-                    dven = re.search(r"Ventas\s*\n\s*([^\n]+)", txt_modal, re.IGNORECASE)
+                    lib_nombre = limpiar(librador_m.group(1) if librador_m else "")
+                    lib_razon = limpiar(razon_m.group(1) if razon_m else "")
+                    librador_final = lib_nombre if lib_nombre else lib_razon
 
-                    det_monto = dm.group(1).strip() if dm else ""
-                    det_banco = db.group(1).strip() if db else ""
-                    det_emision = de.group(1).strip() if de else ""
-                    det_vto = dv.group(1).strip() if dv else ""
-
-                    det_nom = dn.group(1).strip() if dn else ""
-                    det_raz = dr.group(1).strip() if dr else ""
-                    det_rut = drut.group(1).strip() if drut else ""
-                    det_dir = ddir.group(1).strip() if ddir else ""
-                    det_depto = ddepto.group(1).strip() if ddepto else ""
-                    det_ind = dind.group(1).strip() if dind else ""
-                    det_cob = dcob.group(1).strip() if dcob else "-"
-                    det_vig = dvig.group(1).strip() if dvig else ""
-                    det_desc = ddesc.group(1).strip() if ddesc else "-"
-                    det_bancos_man = dbman.group(1).strip() if dbman else ""
-                    det_ventas = dven.group(1).strip() if dven else ""
-
-                    # Cerrar el modal
-                    page.keyboard.press("Escape")
-                    page.wait_for_timeout(600)
-
-                # Separar departamento si viene en la dirección
-                dir_final = det_dir
-                depto_final = det_depto
-                if "," in dir_final:
-                    p_dir = dir_final.split(",")
-                    dir_final = p_dir[0].strip()
-                    depto_final = p_dir[1].strip()
-
-                lib_final = det_nom if det_nom else (det_raz if det_raz else (librador.group(1).strip() if librador else ""))
-
-                if lib_final and lib_final.lower() not in ["valor", "vencimiento", "solicitado", "librador"]:
                     item = {
                         "moneda": moneda,
-                        "librador": lib_final,
-                        "valor": monto_val.group(1).strip() if monto_val else "",
-                        "vto": vto_dias.group(1).strip() if vto_dias else "",
-                        "solicitado": monto_solic.group(1).strip() if monto_solic else "",
-                        "margenNeto": margen_neto.group(1).strip() if margen_neto else "-",
-                        "tirNeta": tir_neta.group(1).strip() if tir_neta else "-",
-                        "tipo": tipo_doc.group(1).strip() if tipo_doc else "Cheque",
-                        "bcu": bcu_val.group(1).strip() if bcu_val else "",
+                        "librador": librador_final,
+                        "valor": limpiar(val_m.group(1) if val_m else ""),
+                        "vto": limpiar(vto_m.group(1) if vto_m else ""),
+                        "solicitado": limpiar(solic_m.group(1) if solic_m else ""),
+                        "margenNeto": "-",
+                        "tirNeta": "-",
+                        "tipo": "Transferencia Programada" if "Transferencia Programada" in modal_text else "Cheque",
+                        "bcu": limpiar(bcu_m.group(1) if bcu_m else ""),
                         "cobradoUSD": "-",
-                        "bancosATransferir": banco_trans.group(1).strip() if banco_trans else "-",
+                        "bancosATransferir": limpiar(banco_m.group(1) if banco_m else "-", "-"),
                         "mejorOferta": "-",
-                        "detValor": det_monto,
-                        "detBanco": det_banco,
-                        "detEmision": det_emision,
-                        "detVencimiento": det_vto,
-                        "detNombre": det_nom,
-                        "detRazonSocial": det_raz,
-                        "detRut": det_rut,
-                        "detDireccion": dir_final,
-                        "detDepartamento": depto_final,
-                        "detIndustria": det_ind,
-                        "detCobrados": det_cob,
-                        "detVigentes": det_vig,
-                        "detDescontadoVigente": det_desc,
-                        "detBancosManeja": det_bancos_man,
-                        "detVentas": det_ventas
+                        "detValor": limpiar(val_m.group(1) if val_m else ""),
+                        "detBanco": limpiar(banco_m.group(1) if banco_m else ""),
+                        "detEmision": limpiar(emision_m.group(1) if emision_m else ""),
+                        "detVencimiento": limpiar(vto_m.group(1) if vto_m else ""),
+                        "detNombre": lib_nombre,
+                        "detRazonSocial": lib_razon,
+                        "detRut": limpiar(rut_m.group(1) if rut_m else ""),
+                        "detDireccion": dir_txt,
+                        "detDepartamento": depto_txt,
+                        "detIndustria": limpiar(ind_m.group(1) if ind_m else ""),
+                        "detCobrados": limpiar(cob_m.group(1) if cob_m else "-", "-"),
+                        "detVigentes": limpiar(vig_m.group(1) if vig_m else ""),
+                        "detDescontadoVigente": limpiar(desc_m.group(1) if desc_m else "-", "-"),
+                        "detBancosManeja": limpiar(bman_m.group(1) if bman_m else ""),
+                        "detVentas": limpiar(ven_m.group(1) if ven_m else "")
                     }
-                    detalles_capturados.append(item)
 
-            except Exception as e_fila:
+                    if item["librador"] or item["detRut"] or item["detRazonSocial"]:
+                        detalles_capturados.append(item)
+
+                    page.keyboard.press("Escape")
+                    page.wait_for_timeout(800)
+
+            except Exception:
                 page.keyboard.press("Escape")
+                page.wait_for_timeout(500)
                 continue
 
     except Exception as e:
