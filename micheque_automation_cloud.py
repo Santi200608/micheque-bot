@@ -10,7 +10,7 @@ WEBHOOK_URL = os.environ.get("GOOGLE_SHEET_ID")
 URL_LOGIN = "https://micheque.uy/login"
 URL_MARKET = "https://micheque.uy/market"
 
-TITULOS_A_IGNORAR = ["valor", "vencimiento", "solicitado", "margen neto", "tir neta", "nombre", "razón social", "rut", "dirección", "departamento", "industria", "cobrados", "vigentes", "descontado vigente", "bancos que maneja", "ventas"]
+TITULOS_A_IGNORAR = ["valor", "vencimiento", "solicitado", "margen neto", "tir neta", "nombre", "razón social", "rut", "dirección", "departamento", "industria", "cobrados", "vigentes", "descontado vigente", "bancos que maneja", "ventas", "detalles de la operación"]
 
 def limpiar_valor(texto, default=""):
     if not texto:
@@ -64,7 +64,7 @@ def extraer_detalles_desplegados(page, moneda):
     try:
         page.wait_for_timeout(3000)
         
-        # 1. Expandir las filas/tarjetas principales
+        # 1. Desplegar tarjetas en pantalla
         page.evaluate("""() => {
             const elementos = document.querySelectorAll('*');
             elementos.forEach(el => {
@@ -75,15 +75,15 @@ def extraer_detalles_desplegados(page, moneda):
                 }
             });
         }""")
-        page.wait_for_timeout(1500)
+        page.wait_for_timeout(2000)
 
-        # 2. Localizar enlaces específicos de "Detalles de la operación"
+        # 2. Buscar enlaces o elementos clicables para abrir detalles
         elementos_detalles = page.query_selector_all("a, button, span, div")
         elementos_validos = []
         for e in elementos_detalles:
             try:
                 txt = (e.inner_text() or '').strip().lower()
-                if "detalles de la operación" in txt or "detalle de la operacion" in txt:
+                if "detalles de la operación" in txt or "detalle de la operacion" in txt or "detalles" in txt:
                     if e.is_visible():
                         elementos_validos.append(e)
             except Exception:
@@ -94,32 +94,20 @@ def extraer_detalles_desplegados(page, moneda):
         for i, elem in enumerate(elementos_validos):
             try:
                 elem.click(force=True)
-                page.wait_for_timeout(2000)
+                page.wait_for_timeout(2500)
 
-                # AISLAMIENTO: Obtener ÚNICAMENTE el texto del modal flotante activo
-                modal_element = page.query_selector("div[role='dialog'], div.v-dialog, div.modal-content, .v-overlay__content")
-                if modal_element:
-                    modal_text = modal_element.inner_text()
-                else:
-                    modal_text = page.evaluate("() => document.body.innerText")
+                modal_text = page.evaluate("() => document.body.innerText")
 
-                # Extraer datos descartando palabras que sean títulos
+                # Parseo de campos
                 nom = re.search(r"Nombre\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
                 raz = re.search(r"Razón social\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
                 librador_val = limpiar_valor(nom.group(1) if nom else (raz.group(1) if raz else ""))
-
-                # Si capturó un título genérico en lugar de la empresa, omitir
-                if not librador_val or librador_val.lower() in TITULOS_A_IGNORAR:
-                    page.keyboard.press("Escape")
-                    page.wait_for_timeout(500)
-                    continue
 
                 monto_solic = re.search(r"Solicitado\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
                 val_m = re.search(r"Monto\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
                 vto_dias = re.search(r"Vencimiento\s*\n\s*(en \d+ días|[^\n]+)", modal_text, re.IGNORECASE)
                 bcu_m = re.search(r"(\d[A-Z])\s*\n\s*BCU", modal_text, re.IGNORECASE)
 
-                # Banco a transferir (filtrando los botones 'Comprar' u 'Ofertar')
                 banco_trans = re.search(r"Bancos a transferir\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
                 banco_trans_val = limpiar_valor(banco_trans.group(1) if banco_trans else "-", "-")
                 if banco_trans_val.lower() in ["comprar", "ofertar", ""]:
@@ -127,13 +115,11 @@ def extraer_detalles_desplegados(page, moneda):
 
                 cobrado_usd_m = re.search(r"Cobrada USD\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
 
-                # Modal: Detalles de la Operación (N a Q)
                 det_val = re.search(r"Monto\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
                 det_banco = re.search(r"Banco\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
                 det_emision = re.search(r"Emisión\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
                 det_vto = re.search(r"Vencimiento\s*\n\s*(\d{2}/\d{2}/\d{4})", modal_text, re.IGNORECASE)
 
-                # Modal: Datos del Librador (R a Z)
                 det_nom = re.search(r"Nombre\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
                 det_raz = re.search(r"Razón social\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
                 det_rut = re.search(r"RUT\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
@@ -154,7 +140,6 @@ def extraer_detalles_desplegados(page, moneda):
                 det_vigentes = re.search(r"Vigentes\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
                 det_desc = re.search(r"Descontado vigente\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
 
-                # Modal: Vendedor (AA a AB)
                 det_bancos_man = re.search(r"Bancos que maneja\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
                 det_ventas = re.search(r"Ventas\s*\n\s*([^\n]+)", modal_text, re.IGNORECASE)
 
@@ -188,14 +173,10 @@ def extraer_detalles_desplegados(page, moneda):
                     "detVentas": limpiar_valor(det_ventas.group(1) if det_ventas else "")
                 }
 
-                detalles_capturados.append(item)
+                if item["librador"] or item["detRut"] or item["detRazonSocial"] or item["valor"]:
+                    detalles_capturados.append(item)
 
-                # Forzar el cierre efectivo del modal antes del siguiente
-                btn_cerrar = page.query_selector("button.v-btn--icon, button.close, .modal-close")
-                if btn_cerrar and btn_cerrar.is_visible():
-                    btn_cerrar.click()
-                else:
-                    page.keyboard.press("Escape")
+                page.keyboard.press("Escape")
                 page.wait_for_timeout(800)
 
             except Exception as ex:
