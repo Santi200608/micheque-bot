@@ -67,7 +67,7 @@ def extraer_detalles_desplegados(page, moneda):
     try:
         page.wait_for_timeout(3000)
         
-        # Expandir tarjetas para ver TIR, Margen y detalles
+        # Expandir tarjetas en la página
         page.evaluate("""() => {
             const btns = document.querySelectorAll('*');
             btns.forEach(b => {
@@ -79,7 +79,6 @@ def extraer_detalles_desplegados(page, moneda):
         }""")
         page.wait_for_timeout(2000)
 
-        # Capturar el cuerpo de la página
         body_text = page.inner_text("body")
         lineas = [l.strip() for l in body_text.split("\n") if l.strip() != ""]
 
@@ -88,11 +87,11 @@ def extraer_detalles_desplegados(page, moneda):
             linea = lineas[i]
             linea_lower = linea.lower()
             
-            # Frenar la lectura si llegamos al pie de página / historial inferior
+            # Cortar la lectura antes de llegar al pie de página o historial
             if "disponible para ofertas" in linea_lower or "mi estado de cuenta" in linea_lower:
                 break
 
-            # Identificar tipo de documento de forma flexible
+            # Detección flexible de tipos de documento (solución al 0 capturas)
             es_cheque = "cheque" in linea_lower
             es_transf = "transferencia" in linea_lower
             es_factura = "factura" in linea_lower
@@ -113,25 +112,20 @@ def extraer_detalles_desplegados(page, moneda):
                     tir = ""
                     bcu = ""
 
-                    # Búsqueda posicional hacia adelante dentro de la misma tarjeta
+                    # Búsqueda posicional corregida para evitar el desfasaje en Vencimiento
                     for j in range(i+1, min(i+12, len(lineas))):
                         sub = lineas[j]
                         
-                        # Valor Nominal
                         if re.match(r"^[\d\.\,]{3,15}$", sub) and not valor:
                             valor = sub
-                        # Vencimiento (ej: en 25 días o fecha exacta)
                         elif ("en " in sub.lower() and "días" in sub.lower() or re.match(r"^\d{2}/\d{2}/\d{4}$", sub)) and not vto:
                             vto = sub
-                        # Solicitado / Margen
                         elif re.match(r"^[\d\.\,]{3,15}$", sub) and valor and not solicitado:
                             solicitado = sub
                         elif re.match(r"^[\d\.\,]{2,10}$", sub) and solicitado and not margen:
                             margen = sub
-                        # TIR Neta (% o decimal)
                         elif ("%" in sub or re.match(r"^\d{1,2}[\,\.]\d{1,2}$", sub)) and not tir:
                             tir = sub
-                        # BCU
                         elif re.match(r"^\d[A-Z]$", sub) and not bcu:
                             bcu = sub
 
