@@ -86,15 +86,20 @@ def extraer_detalles_desplegados(page, moneda):
         i = 0
         while i < len(lineas):
             linea = lineas[i]
+            linea_lower = linea.lower()
             
             # Frenar la lectura si llegamos al pie de página / historial inferior
-            if "disponible para ofertas" in linea.lower() or "mi estado de cuenta" in linea.lower():
+            if "disponible para ofertas" in linea_lower or "mi estado de cuenta" in linea_lower:
                 break
 
-            # Identificar tipo de documento como ancla de cada oportunidad
-            if linea in ["Cheque", "Transferencia Programada", "Factura"]:
+            # Identificar tipo de documento de forma flexible
+            es_cheque = "cheque" in linea_lower
+            es_transf = "transferencia" in linea_lower
+            es_factura = "factura" in linea_lower
+
+            if es_cheque or es_transf or es_factura:
                 try:
-                    tipo = linea
+                    tipo = "Transferencia Programada" if es_transf else ("Factura" if es_factura else "Cheque")
                     librador = lineas[i-1] if i-1 >= 0 else ""
                     
                     if limpiar_campo(librador) == "-":
@@ -115,7 +120,7 @@ def extraer_detalles_desplegados(page, moneda):
                         # Valor Nominal
                         if re.match(r"^[\d\.\,]{3,15}$", sub) and not valor:
                             valor = sub
-                        # Vencimiento (ej: en 25 días o fecha exact)
+                        # Vencimiento (ej: en 25 días o fecha exacta)
                         elif ("en " in sub.lower() and "días" in sub.lower() or re.match(r"^\d{2}/\d{2}/\d{4}$", sub)) and not vto:
                             vto = sub
                         # Solicitado / Margen
