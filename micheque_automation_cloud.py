@@ -98,37 +98,51 @@ def extraer_detalles_desplegados(page, moneda):
                 try:
                     tipo = "Transferencia Programada" if es_transf else ("Factura" if es_factura else "Cheque")
                     librador = lineas[i-1] if i-1 >= 0 else ""
-                    
                     lib_limpio = limpiar_campo(librador)
-                    
-                    # Evitar títulos, campos de filtro o frases genéricas como librador
-                    if lib_limpio == "-" or len(lib_limpio) < 2 or "mínimo" in lib_limpio.lower() or "máximo" in lib_limpio.lower() or "la mejor oferta" in lib_limpio.lower() or "filtrar por" in lib_limpio.lower():
+
+                    # FILTRO ESTRICTO: Descarta fechas (ej: 22/10/2026), números sueltos o títulos de interfaz
+                    if (lib_limpio == "-" or 
+                        len(lib_limpio) < 2 or 
+                        re.match(r"^\d{1,2}/\d{1,2}/\d{4}$", lib_limpio) or 
+                        lib_limpio.isdigit() or 
+                        "mínimo" in lib_limpio.lower() or 
+                        "máximo" in lib_limpio.lower() or 
+                        "la mejor oferta" in lib_limpio.lower() or 
+                        "filtrar por" in lib_limpio.lower()):
                         i += 1
                         continue
 
-                    valor = ""
-                    vto = ""
-                    solicitado = ""
-                    margen = ""
-                    tir = ""
-                    bcu = ""
+                    valor = "-"
+                    vto = "-"
+                    solicitado = "-"
+                    margen = "-"
+                    tir = "-"
+                    bcu = "-"
 
+                    # Recorrido de los datos dentro del bloque de la oportunidad
                     for j in range(i+1, min(i+14, len(lineas))):
                         sub = lineas[j]
                         
-                        if re.match(r"^[\d\.\,]{3,15}$", sub) and not valor:
+                        # Valor Nominal
+                        if re.match(r"^[\d\.\,]{3,15}$", sub) and valor == "-":
                             valor = sub
-                        elif ("en " in sub.lower() and "días" in sub.lower() or re.match(r"^\d{2}/\d{2}/\d{4}$", sub)) and not vto:
+                        # Vencimiento
+                        elif ("en " in sub.lower() and "días" in sub.lower() or re.match(r"^\d{2}/\d{2}/\d{4}$", sub)) and vto == "-":
                             vto = sub
-                        elif re.match(r"^[\d\.\,]{3,15}$", sub) and valor and not solicitado:
+                        # Solicitado
+                        elif re.match(r"^[\d\.\,]{3,15}$", sub) and valor != "-" and solicitado == "-":
                             solicitado = sub
-                        elif re.match(r"^[\d\.\,]{2,10}$", sub) and solicitado and not margen:
+                        # Margen Neto
+                        elif re.match(r"^[\d\.\,]{2,10}$", sub) and solicitado != "-" and margen == "-":
                             margen = sub
-                        elif ("%" in sub or re.match(r"^\d{1,2}[\,\.]\d{1,2}$", sub)) and not tir:
+                        # TIR Neta (% o tasa)
+                        elif ("%" in sub or re.match(r"^\d{1,2}[\,\.]\d{1,2}$", sub)) and tir == "-":
                             tir = sub
-                        elif re.match(r"^\d[A-Z]$", sub) and not bcu:
+                        # Calificación BCU
+                        elif re.match(r"^\d[A-Z]$", sub) and bcu == "-":
                             bcu = sub
 
+                    # Mapeo exacto de las 28 columnas (A a AB) sin saltos ni corrimientos
                     item = {
                         "moneda": moneda,
                         "librador": lib_limpio,
@@ -145,7 +159,7 @@ def extraer_detalles_desplegados(page, moneda):
                         "detValor": valor,
                         "detBanco": "-",
                         "detEmision": "-",
-                        "detVencimiento": vto,
+                        "detVencimiento": vto if re.match(r"^\d{2}/\d{2}/\d{4}$", vto) else "-",
                         "detNombre": lib_limpio,
                         "detRazonSocial": "-",
                         "detRut": "-",
@@ -159,7 +173,7 @@ def extraer_detalles_desplegados(page, moneda):
                         "detVentas": "-"
                     }
                     
-                    if item["librador"] and item["valor"] and item["valor"] != "-":
+                    if item["librador"] != "-" and item["valor"] != "-":
                         detalles_capturados.append(item)
                 except Exception:
                     pass
@@ -246,7 +260,3 @@ def ejecutar():
 
 if __name__ == "__main__":
     ejecutar()
-        
-    
-                  
-   
