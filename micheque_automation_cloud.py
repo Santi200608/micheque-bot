@@ -68,7 +68,7 @@ def extraer_detalles_desplegados(page, moneda):
     try:
         page.wait_for_timeout(3000)
         
-        # 1. Expandir desplegables e intentar abrir modales por evento de JS
+        # Desplegar tarjetas en pantalla
         page.evaluate("""() => {
             const elms = document.querySelectorAll('*');
             elms.forEach(el => {
@@ -90,10 +90,6 @@ def extraer_detalles_desplegados(page, moneda):
             linea = lineas[i]
             linea_lower = linea.lower()
 
-            # Frenar la lectura estrictamente antes de llegar al pie de página/historial
-            if "mi estado de cuenta" in linea_lower or "histórico de operaciones" in linea_lower:
-                break
-
             es_cheque = linea_lower == "cheque"
             es_transf = "transferencia programada" in linea_lower
             es_factura = linea_lower == "factura"
@@ -103,9 +99,10 @@ def extraer_detalles_desplegados(page, moneda):
                     tipo = "Transferencia Programada" if es_transf else ("Factura" if es_factura else "Cheque")
                     librador = lineas[i-1] if i-1 >= 0 else ""
                     
-                    # Descartar filas basuras o frases sueltas
                     lib_limpio = limpiar_campo(librador)
-                    if lib_limpio == "-" or len(lib_limpio) < 2 or "mínimo" in lib_limpio.lower() or "máximo" in lib_limpio.lower() or "la mejor oferta" in lib_limpio.lower():
+                    
+                    # Evitar títulos, campos de filtro o frases genéricas como librador
+                    if lib_limpio == "-" or len(lib_limpio) < 2 or "mínimo" in lib_limpio.lower() or "máximo" in lib_limpio.lower() or "la mejor oferta" in lib_limpio.lower() or "filtrar por" in lib_limpio.lower():
                         i += 1
                         continue
 
@@ -249,3 +246,7 @@ def ejecutar():
 
 if __name__ == "__main__":
     ejecutar()
+        
+    
+                  
+   
