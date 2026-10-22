@@ -13,14 +13,14 @@ URL_MARKET = "https://micheque.uy/market"
 TITULOS_IGNORAR = [
     "librador", "valor", "vencimiento", "solicitado", "margen neto", 
     "tir neta", "tipo", "bcu", "detalles de la operación", "comprar", "ofertar",
-    "disponible para ofertas", "filtrar por", "banco a transferir"
+    "disponible para ofertas", "filtrar por", "banco a transferir", "la mejor oferta"
 ]
 
 def limpiar_campo(val, default="-"):
     if not val:
         return default
     v = val.strip()
-    if v.lower() in TITULOS_IGNORAR:
+    if v.lower() in TITULOS_IGNORAR or "la mejor oferta" in v.lower():
         return default
     return v
 
@@ -68,13 +68,15 @@ def extraer_detalles_desplegados(page, moneda):
     try:
         page.wait_for_timeout(3000)
         
-        # Expandir tarjetas
+        # 1. Expandir desplegables e intentar abrir modales por evento de JS
         page.evaluate("""() => {
-            const btns = document.querySelectorAll('*');
-            btns.forEach(b => {
-                const txt = (b.innerText || '').toLowerCase();
-                if (txt.includes('detalles') || txt.includes('tir') || (b.className && typeof b.className === 'string' && (b.className.includes('chevron') || b.className.includes('arrow')))) {
-                    try { b.click(); } catch(e){}
+            const elms = document.querySelectorAll('*');
+            elms.forEach(el => {
+                const txt = (el.innerText || '').toLowerCase();
+                if (el.children.length === 0 && (txt.includes('detalles') || txt.includes('tir') || (el.className && typeof el.className === 'string' && (el.className.includes('chevron') || el.className.includes('arrow'))))) {
+                    try { 
+                        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                    } catch(e){}
                 }
             });
         }""")
@@ -88,7 +90,10 @@ def extraer_detalles_desplegados(page, moneda):
             linea = lineas[i]
             linea_lower = linea.lower()
 
-            # Detección flexible de tipos de documento
+            # Frenar la lectura estrictamente antes de llegar al pie de página/historial
+            if "mi estado de cuenta" in linea_lower or "histórico de operaciones" in linea_lower:
+                break
+
             es_cheque = linea_lower == "cheque"
             es_transf = "transferencia programada" in linea_lower
             es_factura = linea_lower == "factura"
@@ -98,8 +103,9 @@ def extraer_detalles_desplegados(page, moneda):
                     tipo = "Transferencia Programada" if es_transf else ("Factura" if es_factura else "Cheque")
                     librador = lineas[i-1] if i-1 >= 0 else ""
                     
-                    # Evitar títulos o textos de filtros como librador
-                    if limpiar_campo(librador) == "-" or len(librador) < 2 or "mínimo" in librador.lower() or "máximo" in librador.lower():
+                    # Descartar filas basuras o frases sueltas
+                    lib_limpio = limpiar_campo(librador)
+                    if lib_limpio == "-" or len(lib_limpio) < 2 or "mínimo" in lib_limpio.lower() or "máximo" in lib_limpio.lower() or "la mejor oferta" in lib_limpio.lower():
                         i += 1
                         continue
 
@@ -128,7 +134,7 @@ def extraer_detalles_desplegados(page, moneda):
 
                     item = {
                         "moneda": moneda,
-                        "librador": librador,
+                        "librador": lib_limpio,
                         "valor": valor,
                         "vto": vto,
                         "solicitado": solicitado,
@@ -143,7 +149,7 @@ def extraer_detalles_desplegados(page, moneda):
                         "detBanco": "-",
                         "detEmision": "-",
                         "detVencimiento": vto,
-                        "detNombre": librador,
+                        "detNombre": lib_limpio,
                         "detRazonSocial": "-",
                         "detRut": "-",
                         "detDireccion": "-",
@@ -156,7 +162,7 @@ def extraer_detalles_desplegados(page, moneda):
                         "detVentas": "-"
                     }
                     
-                    if item["librador"] and item["valor"]:
+                    if item["librador"] and item["valor"] and item["valor"] != "-":
                         detalles_capturados.append(item)
                 except Exception:
                     pass
