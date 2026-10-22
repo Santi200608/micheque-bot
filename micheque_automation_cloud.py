@@ -12,7 +12,8 @@ URL_MARKET = "https://micheque.uy/market"
 
 TITULOS_IGNORAR = [
     "librador", "valor", "vencimiento", "solicitado", "margen neto", 
-    "tir neta", "tipo", "bcu", "detalles de la operación", "comprar", "ofertar"
+    "tir neta", "tipo", "bcu", "detalles de la operación", "comprar", "ofertar",
+    "disponible para ofertas", "filtrar por", "banco a transferir"
 ]
 
 def limpiar_campo(val, default="-"):
@@ -67,7 +68,7 @@ def extraer_detalles_desplegados(page, moneda):
     try:
         page.wait_for_timeout(3000)
         
-        # Expandir tarjetas en la página
+        # Expandir tarjetas
         page.evaluate("""() => {
             const btns = document.querySelectorAll('*');
             btns.forEach(b => {
@@ -86,22 +87,19 @@ def extraer_detalles_desplegados(page, moneda):
         while i < len(lineas):
             linea = lineas[i]
             linea_lower = linea.lower()
-            
-            # Cortar la lectura antes de llegar al pie de página o historial
-            if "disponible para ofertas" in linea_lower or "mi estado de cuenta" in linea_lower:
-                break
 
-            # Detección flexible de tipos de documento (solución al 0 capturas)
-            es_cheque = "cheque" in linea_lower
-            es_transf = "transferencia" in linea_lower
-            es_factura = "factura" in linea_lower
+            # Detección flexible de tipos de documento
+            es_cheque = linea_lower == "cheque"
+            es_transf = "transferencia programada" in linea_lower
+            es_factura = linea_lower == "factura"
 
             if es_cheque or es_transf or es_factura:
                 try:
                     tipo = "Transferencia Programada" if es_transf else ("Factura" if es_factura else "Cheque")
                     librador = lineas[i-1] if i-1 >= 0 else ""
                     
-                    if limpiar_campo(librador) == "-":
+                    # Evitar títulos o textos de filtros como librador
+                    if limpiar_campo(librador) == "-" or len(librador) < 2 or "mínimo" in librador.lower() or "máximo" in librador.lower():
                         i += 1
                         continue
 
@@ -112,8 +110,7 @@ def extraer_detalles_desplegados(page, moneda):
                     tir = ""
                     bcu = ""
 
-                    # Búsqueda posicional corregida para evitar el desfasaje en Vencimiento
-                    for j in range(i+1, min(i+12, len(lineas))):
+                    for j in range(i+1, min(i+14, len(lineas))):
                         sub = lineas[j]
                         
                         if re.match(r"^[\d\.\,]{3,15}$", sub) and not valor:
