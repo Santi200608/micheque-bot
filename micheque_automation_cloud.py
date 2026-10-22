@@ -62,149 +62,109 @@ def procesar_texto_seccion(texto, moneda_esperada):
         i += 1
     return transacciones
 
-def extraer_oportunidades_exactas(page, moneda):
+def extraer_detalles_desplegados(page, moneda):
     detalles_capturados = []
     try:
         page.wait_for_timeout(3000)
-
-        # 1. Expandir desplegables
+        
+        # Expandir tarjetas para ver TIR, Margen y detalles
         page.evaluate("""() => {
-            const btns = document.querySelectorAll('.v-expansion-panel-title, [class*="chevron"], [class*="arrow"]');
-            btns.forEach(b => { try { b.click(); } catch(e){} });
+            const btns = document.querySelectorAll('*');
+            btns.forEach(b => {
+                const txt = (b.innerText || '').toLowerCase();
+                if (txt.includes('detalles') || txt.includes('tir') || (b.className && typeof b.className === 'string' && (b.className.includes('chevron') || b.className.includes('arrow')))) {
+                    try { b.click(); } catch(e){}
+                }
+            });
         }""")
         page.wait_for_timeout(2000)
 
-        # 2. Buscar todas las tarjetas en la página directamente
-        tarjetas = page.query_selector_all(".v-expansion-panel, .v-card")
-        print(f"Tarjetas detectadas para {moneda}: {len(tarjetas)}")
+        # Capturar el cuerpo de la página
+        body_text = page.inner_text("body")
+        lineas = [l.strip() for l in body_text.split("\n") if l.strip() != ""]
 
-        for tarjeta in tarjetas:
-            try:
-                txt_tarjeta = tarjeta.inner_text()
-                
-                # Filtrar encabezados, paneles de control o historiales inferiores
-                if "disponible para ofertas" in txt_tarjeta.lower() or "filtrar por" in txt_tarjeta.lower():
-                    continue
-                if "librador" in txt_tarjeta.lower() and "valor" in txt_tarjeta.lower() and len(txt_tarjeta.split('\n')) < 5:
-                    continue
+        i = 0
+        while i < len(lineas):
+            linea = lineas[i]
+            
+            # Frenar la lectura si llegamos al pie de página / historial inferior
+            if "disponible para ofertas" in linea.lower() or "mi estado de cuenta" in linea.lower():
+                break
 
-                # Extraer campos de la tarjeta
-                librador_match = re.search(r"([A-Z0-9\s\.\-]{3,40})\n(?:Cheque|Transferencia Programada|Factura)", txt_tarjeta)
-                valor_match = re.search(r"([\d\.\,]{3,15})\n(?:en \d+ días|\d{2}/\d{2}/\d{4})", txt_tarjeta)
-                vto_match = re.search(r"(en \d+ días|\d{2}/\d{2}/\d{4})", txt_tarjeta)
-                solic_match = re.search(r"Solicitado\s*\n?\s*([\d\.\,]+)", txt_tarjeta, re.IGNORECASE)
-                margen_match = re.search(r"Margen [Nn]eto\s*\n?\s*([\d\.\,]+)", txt_tarjeta, re.IGNORECASE)
-                tir_match = re.search(r"(\d{1,2}[\,\.]\d{1,2}\%|TIR [Nn]eta\s*\n?\s*[\d\.\,\%]+)", txt_tarjeta, re.IGNORECASE)
-                tipo_match = re.search(r"(Cheque|Transferencia Programada|Factura)", txt_tarjeta)
-                bcu_match = re.search(r"(\d[A-Z])\s*\n?\s*BCU", txt_tarjeta)
-                cobrado_usd_match = re.search(r"Cobrada? USD\s*\n?\s*([\d\.\,]+|-)", txt_tarjeta, re.IGNORECASE)
-                banco_trans_match = re.search(r"Bancos? a transferir\s*\n?\s*([A-Za-záéíóúÁÉÍÓÚ\s]+)", txt_tarjeta, re.IGNORECASE)
-                mejor_oferta_match = re.search(r"(La mejor oferta es de[^\n]+)", txt_tarjeta, re.IGNORECASE)
-
-                lib_val = limpiar_campo(librador_match.group(1) if librador_match else "")
-                if lib_val == "-":
-                    continue
-
-                # Abrir Modal
-                btn_detalle = tarjeta.query_selector("text=/Detalles de la operación/i, text=/Detalle/i, a, button")
-                
-                det_valor = det_banco = det_emision = det_vto = "-"
-                det_nom = det_raz = det_rut = det_dir = det_depto = det_ind = "-"
-                det_cob = det_vig = det_desc = det_bancos_man = det_ventas = "-"
-
-                if btn_detalle and btn_detalle.is_visible():
-                    btn_detalle.click(force=True)
+            # Identificar tipo de documento como ancla de cada oportunidad
+            if linea in ["Cheque", "Transferencia Programada", "Factura"]:
+                try:
+                    tipo = linea
+                    librador = lineas[i-1] if i-1 >= 0 else ""
                     
-                    try:
-                        page.wait_for_timeout(2000)
-                        modal = page.query_selector("div[role='dialog'], .v-overlay__content, .modal-content")
-                        modal_txt = modal.inner_text() if modal else page.evaluate("() => document.body.innerText")
+                    if limpiar_campo(librador) == "-":
+                        i += 1
+                        continue
 
-                        if modal_txt:
-                            m_val = re.search(r"Valor\s*\n?\s*([UY$USD\s\d\.\,]+)", modal_txt, re.IGNORECASE)
-                            m_banco = re.search(r"Banco\s*\n?\s*([A-Za-záéíóúÁÉÍÓÚ\s]+)", modal_txt, re.IGNORECASE)
-                            m_emi = re.search(r"Emisión\s*\n?\s*(\d{2}/\d{2}/\d{4})", modal_txt, re.IGNORECASE)
-                            m_vto = re.search(r"Vencimiento\s*\n?\s*(\d{2}/\d{2}/\d{4})", modal_txt, re.IGNORECASE)
+                    valor = ""
+                    vto = ""
+                    solicitado = ""
+                    margen = ""
+                    tir = ""
+                    bcu = ""
 
-                            m_nom = re.search(r"Nombre\s*\n?\s*([^\n]+)", modal_txt, re.IGNORECASE)
-                            m_raz = re.search(r"Razón social\s*\n?\s*([^\n]+)", modal_txt, re.IGNORECASE)
-                            m_rut = re.search(r"RUT\s*\n?\s*(\d{12})", modal_txt, re.IGNORECASE)
-                            m_dir = re.search(r"Dirección\s*\n?\s*([^\n]+)", modal_txt, re.IGNORECASE)
-                            m_depto = re.search(r"Departamento\s*\n?\s*([^\n]+)", modal_txt, re.IGNORECASE)
-                            m_ind = re.search(r"Industria\s*\n?\s*([^\n]+)", modal_txt, re.IGNORECASE)
-                            m_cob = re.search(r"Cobrados\s*\n?\s*([^\n]+)", modal_txt, re.IGNORECASE)
-                            m_vig = re.search(r"Vigentes\s*\n?\s*([^\n]+)", modal_txt, re.IGNORECASE)
-                            m_desc = re.search(r"Descontado vigente\s*\n?\s*([^\n]+)", modal_txt, re.IGNORECASE)
-                            m_bman = re.search(r"Bancos que maneja\s*\n?\s*([^\n]+)", modal_txt, re.IGNORECASE)
-                            m_ven = re.search(r"Ventas\s*\n?\s*(\d+)", modal_txt, re.IGNORECASE)
+                    # Búsqueda posicional hacia adelante dentro de la misma tarjeta
+                    for j in range(i+1, min(i+12, len(lineas))):
+                        sub = lineas[j]
+                        
+                        # Valor Nominal
+                        if re.match(r"^[\d\.\,]{3,15}$", sub) and not valor:
+                            valor = sub
+                        # Vencimiento (ej: en 25 días o fecha exact)
+                        elif ("en " in sub.lower() and "días" in sub.lower() or re.match(r"^\d{2}/\d{2}/\d{4}$", sub)) and not vto:
+                            vto = sub
+                        # Solicitado / Margen
+                        elif re.match(r"^[\d\.\,]{3,15}$", sub) and valor and not solicitado:
+                            solicitado = sub
+                        elif re.match(r"^[\d\.\,]{2,10}$", sub) and solicitado and not margen:
+                            margen = sub
+                        # TIR Neta (% o decimal)
+                        elif ("%" in sub or re.match(r"^\d{1,2}[\,\.]\d{1,2}$", sub)) and not tir:
+                            tir = sub
+                        # BCU
+                        elif re.match(r"^\d[A-Z]$", sub) and not bcu:
+                            bcu = sub
 
-                            det_valor = limpiar_campo(m_val.group(1) if m_val else "")
-                            det_banco = limpiar_campo(m_banco.group(1) if m_banco else "")
-                            det_emision = limpiar_campo(m_emi.group(1) if m_emi else "")
-                            det_vto = limpiar_campo(m_vto.group(1) if m_vto else "")
-
-                            det_nom = limpiar_campo(m_nom.group(1) if m_nom else "")
-                            det_raz = limpiar_campo(m_raz.group(1) if m_raz else "")
-                            det_rut = limpiar_campo(m_rut.group(1) if m_rut else "")
-                            det_dir = limpiar_campo(m_dir.group(1) if m_dir else "")
-                            det_depto = limpiar_campo(m_depto.group(1) if m_depto else "")
-                            det_ind = limpiar_campo(m_ind.group(1) if m_ind else "")
-                            det_cob = limpiar_campo(m_cob.group(1) if m_cob else "")
-                            det_vig = limpiar_campo(m_vig.group(1) if m_vig else "")
-                            det_desc = limpiar_campo(m_desc.group(1) if m_desc else "")
-                            det_bancos_man = limpiar_campo(m_bman.group(1) if m_bman else "")
-                            det_ventas = limpiar_campo(m_ven.group(1) if m_ven else "")
-
-                    except Exception:
-                        pass
+                    item = {
+                        "moneda": moneda,
+                        "librador": librador,
+                        "valor": valor,
+                        "vto": vto,
+                        "solicitado": solicitado,
+                        "margenNeto": margen,
+                        "tirNeta": tir,
+                        "tipo": tipo,
+                        "bcu": bcu,
+                        "cobradoUSD": "-",
+                        "bancosATransferir": "-",
+                        "mejorOferta": "-",
+                        "detValor": valor,
+                        "detBanco": "-",
+                        "detEmision": "-",
+                        "detVencimiento": vto,
+                        "detNombre": librador,
+                        "detRazonSocial": "-",
+                        "detRut": "-",
+                        "detDireccion": "-",
+                        "detDepartamento": "-",
+                        "detIndustria": "-",
+                        "detCobrados": "-",
+                        "detVigentes": "-",
+                        "detDescontadoVigente": "-",
+                        "detBancosManeja": "-",
+                        "detVentas": "-"
+                    }
                     
-                    page.keyboard.press("Escape")
-                    page.wait_for_timeout(500)
-
-                # Dirección y Departamento
-                if "," in det_dir and det_depto == "-":
-                    partes = det_dir.split(",")
-                    det_dir = partes[0].strip()
-                    det_depto = partes[1].strip()
-
-                banco_trans_val = limpiar_campo(banco_trans_match.group(1) if banco_trans_match else "")
-                if banco_trans_val.lower() in ["comprar", "ofertar", ""]:
-                    banco_trans_val = "-"
-
-                item = {
-                    "moneda": moneda,
-                    "librador": lib_val,
-                    "valor": limpiar_campo(valor_match.group(1) if valor_match else ""),
-                    "vto": limpiar_campo(vto_match.group(1) if vto_match else ""),
-                    "solicitado": limpiar_campo(solic_match.group(1) if solic_match else ""),
-                    "margenNeto": limpiar_campo(margen_match.group(1) if margen_match else ""),
-                    "tirNeta": limpiar_campo(tir_match.group(1) if tir_match else ""),
-                    "tipo": limpiar_campo(tipo_match.group(1) if tipo_match else "Cheque"),
-                    "bcu": limpiar_campo(bcu_match.group(1) if bcu_match else ""),
-                    "cobradoUSD": limpiar_campo(cobrado_usd_match.group(1) if cobrado_usd_match else ""),
-                    "bancosATransferir": banco_trans_val,
-                    "mejorOferta": limpiar_campo(mejor_oferta_match.group(1) if mejor_oferta_match else ""),
-                    "detValor": det_valor,
-                    "detBanco": det_banco,
-                    "detEmision": det_emision,
-                    "detVencimiento": det_vto,
-                    "detNombre": det_nom,
-                    "detRazonSocial": det_raz,
-                    "detRut": det_rut,
-                    "detDireccion": det_dir,
-                    "detDepartamento": det_depto,
-                    "detIndustria": det_ind,
-                    "detCobrados": det_cob,
-                    "detVigentes": det_vig,
-                    "detDescontadoVigente": det_desc,
-                    "detBancosManeja": det_bancos_man,
-                    "detVentas": det_ventas
-                }
-                detalles_capturados.append(item)
-
-            except Exception:
-                page.keyboard.press("Escape")
-                continue
+                    if item["librador"] and item["valor"]:
+                        detalles_capturados.append(item)
+                except Exception:
+                    pass
+            i += 1
 
     except Exception as e:
         print(f"Error general en extracción de detalles: {e}")
@@ -243,7 +203,7 @@ def obtener_transacciones():
         pesos = procesar_texto_seccion(texto_pesos, "UY$")
         todas_transacciones.extend(pesos)
         
-        detalles_uy = extraer_oportunidades_exactas(page, "UY$")
+        detalles_uy = extraer_detalles_desplegados(page, "UY$")
         todos_detalles.extend(detalles_uy)
 
         # 4. Dólares
@@ -265,7 +225,7 @@ def obtener_transacciones():
             usd_items = procesar_texto_seccion(texto_usd, "USD")
             todas_transacciones.extend(usd_items)
             
-            detalles_usd = extraer_oportunidades_exactas(page, "USD")
+            detalles_usd = extraer_detalles_desplegados(page, "USD")
             todos_detalles.extend(detalles_usd)
 
         except Exception as e:
