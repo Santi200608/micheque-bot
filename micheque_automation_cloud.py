@@ -63,37 +63,26 @@ def procesar_texto_seccion(texto, moneda_esperada):
         i += 1
     return transacciones
 
+# ==============================================================================
+# BASE DE EXTRACCIÓN ROBUSTA (PROBADA Y FUNCIONAL)
+# ==============================================================================
 def extraer_detalles_desplegados(page, moneda):
     detalles_capturados = []
     try:
         page.wait_for_timeout(3000)
         
-        # 1. Desplegar primero las tarjetas básicas (para TIR, BCU, etc.)
+        # Clics para desplegar la información de la tarjeta (TIR, BCU, etc.)
         page.evaluate("""() => {
             const btns = document.querySelectorAll('*');
             btns.forEach(b => {
                 const txt = (b.innerText || '').toLowerCase();
-                if (txt.includes('tir') || (b.className && typeof b.className === 'string' && (b.className.includes('chevron') || b.className.includes('arrow')))) {
+                if (txt.includes('detalles') || txt.includes('tir') || (b.className && typeof b.className === 'string' && (b.className.includes('chevron') || b.className.includes('arrow')))) {
                     try { b.click(); } catch(e){}
                 }
             });
         }""")
         page.wait_for_timeout(2000)
 
-        # 2. Localizar botones o enlaces de "Detalles de la operación"
-        botones_detalles = page.query_selector_all("text=/Detalles de la operación/i, text=/Ver detalle/i, .v-btn")
-        print(f"Botones de detalles detectados ({moneda}): {len(botones_detalles)}")
-
-        # Forzar clic en cada modal si existen
-        for btn in botones_detalles:
-            try:
-                if btn.is_visible():
-                    btn.click(force=True)
-                    page.wait_for_timeout(1000)
-            except Exception:
-                pass
-
-        # Capturar el texto completo de la página tras los clics
         body_text = page.inner_text("body")
         lineas = [l.strip() for l in body_text.split("\n") if l.strip() != ""]
 
@@ -112,7 +101,7 @@ def extraer_detalles_desplegados(page, moneda):
                     librador = lineas[i-1] if i-1 >= 0 else ""
                     lib_limpio = limpiar_campo(librador)
 
-                    # Filtro de seguridad
+                    # Filtro de seguridad anti-filas basura
                     if (lib_limpio == "-" or 
                         len(lib_limpio) < 2 or 
                         "%" in lib_limpio or 
@@ -131,33 +120,13 @@ def extraer_detalles_desplegados(page, moneda):
                     margen = "-"
                     tir = "-"
                     bcu = "-"
-                    cobrado_usd = "-"
-                    bancos_transferir = "-"
-                    mejor_oferta = "-"
 
-                    # Campos específicos del Modal
-                    det_banco = "-"
-                    det_emision = "-"
-                    det_vencimiento = "-"
-                    det_razon_social = "-"
-                    det_rut = "-"
-                    det_direccion = "-"
-                    det_departamento = "-"
-                    det_industria = "-"
-                    det_cobrados = "-"
-                    det_vigentes = "-"
-                    det_descontado_vigente = "-"
-                    det_bancos_maneja = "-"
-                    det_ventas = "-"
-
-                    # Recorrido del bloque para extraer datos de la oportunidad y del modal
-                    for j in range(i+1, min(i+25, len(lineas))):
+                    for j in range(i+1, min(i+14, len(lineas))):
                         sub = lineas[j]
-                        sub_lower = sub.lower()
                         
                         if re.match(r"^[\d\.\,]{3,15}$", sub) and valor == "-":
                             valor = sub
-                        elif ("en " in sub_lower and "días" in sub_lower or re.match(r"^\d{2}/\d{2}/\d{4}$", sub)) and vto == "-":
+                        elif ("en " in sub.lower() and "días" in sub.lower() or re.match(r"^\d{2}/\d{2}/\d{4}$", sub)) and vto == "-":
                             vto = sub
                         elif re.match(r"^[\d\.\,]{3,15}$", sub) and valor != "-" and solicitado == "-":
                             solicitado = sub
@@ -167,24 +136,6 @@ def extraer_detalles_desplegados(page, moneda):
                             tir = sub
                         elif re.match(r"^\d[A-Z]$", sub) and bcu == "-":
                             bcu = sub
-                        
-                        # Lectura del modal si el texto está desplegado
-                        elif "rut" in sub_lower and j+1 < len(lineas) and det_rut == "-":
-                            cand = lineas[j+1]
-                            if re.match(r"^\d{12}$", cand):
-                                det_rut = cand
-                        elif ("razón social" in sub_lower or "razon social" in sub_lower) and j+1 < len(lineas) and det_razon_social == "-":
-                            det_razon_social = limpiar_campo(lineas[j+1])
-                        elif "banco" in sub_lower and j+1 < len(lineas) and det_banco == "-":
-                            det_banco = limpiar_campo(lineas[j+1])
-                        elif "emisión" in sub_lower or "emision" in sub_lower and j+1 < len(lineas) and det_emision == "-":
-                            cand = lineas[j+1]
-                            if re.match(r"^\d{2}/\d{2}/\d{4}$", cand):
-                                det_emision = cand
-                        elif "dirección" in sub_lower or "direccion" in sub_lower and j+1 < len(lineas) and det_direccion == "-":
-                            det_direccion = limpiar_campo(lineas[j+1])
-                        elif "departamento" in sub_lower and j+1 < len(lineas) and det_departamento == "-":
-                            det_departamento = limpiar_campo(lineas[j+1])
 
                     item = {
                         "moneda": moneda,
@@ -196,24 +147,24 @@ def extraer_detalles_desplegados(page, moneda):
                         "tirNeta": tir,
                         "tipo": tipo,
                         "bcu": bcu,
-                        "cobradoUSD": cobrado_usd,
-                        "bancosATransferir": bancos_transferir,
-                        "mejorOferta": mejor_oferta,
+                        "cobradoUSD": "-",
+                        "bancosATransferir": "-",
+                        "mejorOferta": "-",
                         "detValor": valor,
-                        "detBanco": det_banco,
-                        "detEmision": det_emision,
-                        "detVencimiento": det_vencimiento if det_vencimiento != "-" else vto,
+                        "detBanco": "-",
+                        "detEmision": "-",
+                        "detVencimiento": vto if re.match(r"^\d{2}/\d{2}/\d{4}$", vto) else "-",
                         "detNombre": lib_limpio,
-                        "detRazonSocial": det_razon_social,
-                        "detRut": det_rut,
-                        "detDireccion": det_direccion,
-                        "detDepartamento": det_departamento,
-                        "detIndustria": det_industria,
-                        "detCobrados": det_cobrados,
-                        "detVigentes": det_vigentes,
-                        "detDescontadoVigente": det_descontado_vigente,
-                        "detBancosManeja": det_bancos_maneja,
-                        "detVentas": det_ventas
+                        "detRazonSocial": "-",
+                        "detRut": "-",
+                        "detDireccion": "-",
+                        "detDepartamento": "-",
+                        "detIndustria": "-",
+                        "detCobrados": "-",
+                        "detVigentes": "-",
+                        "detDescontadoVigente": "-",
+                        "detBancosManeja": "-",
+                        "detVentas": "-"
                     }
                     
                     if item["librador"] != "-" and item["valor"] != "-":
@@ -302,4 +253,7 @@ def ejecutar():
         requests.post(WEBHOOK_URL, json={"tipo_evento": "detalles_oportunidades", "detalles": detalles})
 
 if __name__ == "__main__":
-    ejecutar()
+    ejecutar() 
+  
+                 
+      
