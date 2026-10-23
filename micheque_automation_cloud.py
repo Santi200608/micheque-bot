@@ -13,7 +13,8 @@ URL_MARKET = "https://micheque.uy/market"
 TITULOS_IGNORAR = [
     "librador", "valor", "vencimiento", "solicitado", "margen neto", 
     "tir neta", "tipo", "bcu", "detalles de la operación", "comprar", "ofertar",
-    "disponible para ofertas", "filtrar por", "banco a transferir", "la mejor oferta"
+    "disponible para ofertas", "filtrar por", "banco a transferir", "la mejor oferta",
+    "cobrado usd"
 ]
 
 def limpiar_campo(val, default="-"):
@@ -69,13 +70,13 @@ def extraer_detalles_desplegados(page, moneda):
         page.wait_for_timeout(3000)
         
         # ==========================================================
-        # FASE 1: BASE INTOCABLE (Columnas A - J perfectas)
+        # FASE 1: BASE INTOCABLE (Columnas A - J perfectas) + BCU/Banco
         # ==========================================================
         page.evaluate("""() => {
-            const btns = document.querySelectorAll('*');
+            const btns = document.querySelectorAll('.v-expansion-panel-header, .v-expansion-panel-title, *');
             btns.forEach(b => {
                 const txt = (b.innerText || '').toLowerCase();
-                if (txt.includes('tir') || (b.className && typeof b.className === 'string' && (b.className.includes('chevron') || b.className.includes('arrow')))) {
+                if (txt.includes('tir') || txt.includes('%') || (b.className && typeof b.className === 'string' && (b.className.includes('chevron') || b.className.includes('arrow')))) {
                     try { b.click(); } catch(e){}
                 }
             });
@@ -100,7 +101,6 @@ def extraer_detalles_desplegados(page, moneda):
                     librador = lineas[i-1] if i-1 >= 0 else ""
                     lib_limpio = limpiar_campo(librador)
 
-                    # Filtro de seguridad (Intocable)
                     if (lib_limpio == "-" or 
                         len(lib_limpio) < 2 or 
                         "%" in lib_limpio or 
@@ -119,16 +119,24 @@ def extraer_detalles_desplegados(page, moneda):
                     margen = "-"
                     tir = "-"
                     bcu = "-"
+                    cobrado_usd = "-"
+                    bancos_transferir = "-"
 
-                    for j in range(i+1, min(i+14, len(lineas))):
+                    # Ampliamos a 25 líneas para cubrir Cobrado USD y Banco a transferir
+                    for j in range(i+1, min(i+25, len(lineas))):
                         sub = lineas[j]
+                        sub_lower = sub.lower()
+                        
                         if re.match(r"^[\d\.\,]{3,15}$", sub) and valor == "-": valor = sub
-                        elif ("en " in sub.lower() and "días" in sub.lower() or re.match(r"^\d{2}/\d{2}/\d{4}$", sub)) and vto == "-": vto = sub
+                        elif ("en " in sub_lower and "días" in sub_lower or re.match(r"^\d{2}/\d{2}/\d{4}$", sub)) and vto == "-": vto = sub
                         elif re.match(r"^[\d\.\,]{3,15}$", sub) and valor != "-" and solicitado == "-": solicitado = sub
                         elif re.match(r"^[\d\.\,]{2,10}$", sub) and solicitado != "-" and margen == "-": margen = sub
                         elif ("%" in sub or re.match(r"^\d{1,2}[\,\.]\d{1,2}$", sub)) and tir == "-": tir = sub
-                        # Flexibilizado para aceptar "0", "1", "1C", "2B", etc.
-                        elif re.match(r"^\d[A-Za-z]?$", sub) and bcu == "-": bcu = sub
+                        
+                        # Lectura Anclada (Toma el renglón de arriba de la etiqueta exacta)
+                        elif sub_lower == "bcu" and bcu == "-": bcu = lineas[j-1]
+                        elif sub_lower == "cobrado usd" and cobrado_usd == "-": cobrado_usd = lineas[j-1]
+                        elif sub_lower == "banco a transferir" and bancos_transferir == "-": bancos_transferir = lineas[j-1]
 
                     item = {
                         "moneda": moneda,
@@ -140,8 +148,8 @@ def extraer_detalles_desplegados(page, moneda):
                         "tirNeta": tir,
                         "tipo": tipo,
                         "bcu": bcu,
-                        "cobradoUSD": "-",
-                        "bancosATransferir": "-",
+                        "cobradoUSD": cobrado_usd,
+                        "bancosATransferir": bancos_transferir,
                         "mejorOferta": "-",
                         "detValor": valor,
                         "detBanco": "-",
@@ -167,7 +175,7 @@ def extraer_detalles_desplegados(page, moneda):
             i += 1
 
         # ==========================================================
-        # FASE 2: APERTURA DE MODALES PARA COMPLETAR COLUMNAS K A AB
+        # FASE 2: APERTURA DE MODALES PARA COMPLETAR DETALLES 
         # ==========================================================
         try:
             botones_detalle = page.locator("text=/Detalles de la operación/i, text=/Ver detalle/i").all()
@@ -234,7 +242,6 @@ def obtener_transacciones():
         browser = p.chromium.launch(headless=True)
         page = browser.new_page(viewport={"width": 1400, "height": 900})
         
-        # 1. Login
         print("Iniciando sesión en MiCheque...")
         page.goto(URL_LOGIN, wait_until="networkidle")
         page.wait_for_timeout(2000)
@@ -244,7 +251,6 @@ def obtener_transacciones():
         page.keyboard.press("Enter")
         page.wait_for_timeout(4000)
         
-        # 2. Mercado
         print("Navegando al mercado...")
         page.goto(URL_MARKET, wait_until="networkidle")
         page.wait_for_timeout(5000)
@@ -252,7 +258,6 @@ def obtener_transacciones():
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         page.wait_for_timeout(2000)
 
-        # 3. Pesos
         print("Extrayendo sección Pesos...")
         texto_pesos = page.inner_text("body")
         pesos = procesar_texto_seccion(texto_pesos, "UY$")
@@ -261,7 +266,6 @@ def obtener_transacciones():
         detalles_uy = extraer_detalles_desplegados(page, "UY$")
         todos_detalles.extend(detalles_uy)
 
-        # 4. Dólares
         print("Cambiando vista a Dólares...")
         try:
             elementos_usd = page.query_selector_all("button, div, span, a")
@@ -289,7 +293,6 @@ def obtener_transacciones():
         browser.close()
     return todas_transacciones, todos_detalles
 
-# Filtro anti-duplicados a nivel global antes de enviar a Google Sheets
 def eliminar_duplicados(lista):
     vistos = set()
     resultado = []
@@ -307,7 +310,6 @@ def eliminar_duplicados(lista):
 def ejecutar():
     nuevas, detalles = obtener_transacciones()
     
-    # Aplicar limpieza de duplicados
     nuevas_limpias = eliminar_duplicados(nuevas)
     detalles_limpios = eliminar_duplicados(detalles)
     
