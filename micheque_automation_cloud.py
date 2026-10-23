@@ -63,20 +63,19 @@ def procesar_texto_seccion(texto, moneda_esperada):
         i += 1
     return transacciones
 
-# ==============================================================================
-# BASE DE EXTRACCIÓN ROBUSTA (PROBADA Y FUNCIONAL)
-# ==============================================================================
 def extraer_detalles_desplegados(page, moneda):
     detalles_capturados = []
     try:
         page.wait_for_timeout(3000)
         
-        # Clics para desplegar la información de la tarjeta (TIR, BCU, etc.)
+        # ==========================================================
+        # FASE 1: BASE INTOCABLE (Columnas A - J perfectas)
+        # ==========================================================
         page.evaluate("""() => {
             const btns = document.querySelectorAll('*');
             btns.forEach(b => {
                 const txt = (b.innerText || '').toLowerCase();
-                if (txt.includes('detalles') || txt.includes('tir') || (b.className && typeof b.className === 'string' && (b.className.includes('chevron') || b.className.includes('arrow')))) {
+                if (txt.includes('tir') || (b.className && typeof b.className === 'string' && (b.className.includes('chevron') || b.className.includes('arrow')))) {
                     try { b.click(); } catch(e){}
                 }
             });
@@ -101,7 +100,7 @@ def extraer_detalles_desplegados(page, moneda):
                     librador = lineas[i-1] if i-1 >= 0 else ""
                     lib_limpio = limpiar_campo(librador)
 
-                    # Filtro de seguridad anti-filas basura
+                    # Filtro de seguridad (Intocable)
                     if (lib_limpio == "-" or 
                         len(lib_limpio) < 2 or 
                         "%" in lib_limpio or 
@@ -123,19 +122,13 @@ def extraer_detalles_desplegados(page, moneda):
 
                     for j in range(i+1, min(i+14, len(lineas))):
                         sub = lineas[j]
-                        
-                        if re.match(r"^[\d\.\,]{3,15}$", sub) and valor == "-":
-                            valor = sub
-                        elif ("en " in sub.lower() and "días" in sub.lower() or re.match(r"^\d{2}/\d{2}/\d{4}$", sub)) and vto == "-":
-                            vto = sub
-                        elif re.match(r"^[\d\.\,]{3,15}$", sub) and valor != "-" and solicitado == "-":
-                            solicitado = sub
-                        elif re.match(r"^[\d\.\,]{2,10}$", sub) and solicitado != "-" and margen == "-":
-                            margen = sub
-                        elif ("%" in sub or re.match(r"^\d{1,2}[\,\.]\d{1,2}$", sub)) and tir == "-":
-                            tir = sub
-                        elif re.match(r"^\d[A-Z]$", sub) and bcu == "-":
-                            bcu = sub
+                        if re.match(r"^[\d\.\,]{3,15}$", sub) and valor == "-": valor = sub
+                        elif ("en " in sub.lower() and "días" in sub.lower() or re.match(r"^\d{2}/\d{2}/\d{4}$", sub)) and vto == "-": vto = sub
+                        elif re.match(r"^[\d\.\,]{3,15}$", sub) and valor != "-" and solicitado == "-": solicitado = sub
+                        elif re.match(r"^[\d\.\,]{2,10}$", sub) and solicitado != "-" and margen == "-": margen = sub
+                        elif ("%" in sub or re.match(r"^\d{1,2}[\,\.]\d{1,2}$", sub)) and tir == "-": tir = sub
+                        # Flexibilizado para aceptar "0", "1", "1C", "2B", etc.
+                        elif re.match(r"^\d[A-Za-z]?$", sub) and bcu == "-": bcu = sub
 
                     item = {
                         "moneda": moneda,
@@ -172,6 +165,61 @@ def extraer_detalles_desplegados(page, moneda):
                 except Exception:
                     pass
             i += 1
+
+        # ==========================================================
+        # FASE 2: APERTURA DE MODALES PARA COMPLETAR COLUMNAS K A AB
+        # ==========================================================
+        try:
+            botones_detalle = page.locator("text=/Detalles de la operación/i, text=/Ver detalle/i").all()
+            for btn in botones_detalle:
+                try:
+                    if btn.is_visible():
+                        btn.click(force=True)
+                        page.wait_for_timeout(1000)
+
+                        modal = page.locator(".v-dialog--active, .v-overlay__content").first
+                        if modal.is_visible():
+                            texto_modal = modal.inner_text()
+                            texto_modal_lower = texto_modal.lower()
+
+                            m_banco = re.search(r"Banco\s*\n?\s*([A-Za-záéíóúÁÉÍÓÚ\s]+)", texto_modal, re.IGNORECASE)
+                            m_emi = re.search(r"Emisión\s*\n?\s*(\d{2}/\d{2}/\d{4})", texto_modal, re.IGNORECASE)
+                            m_venc = re.search(r"Vencimiento\s*\n?\s*(\d{2}/\d{2}/\d{4})", texto_modal, re.IGNORECASE)
+                            m_razon = re.search(r"Razón social\s*\n?\s*([^\n]+)", texto_modal, re.IGNORECASE)
+                            m_rut = re.search(r"RUT\s*\n?\s*(\d{12})", texto_modal, re.IGNORECASE)
+                            m_dir = re.search(r"Dirección\s*\n?\s*([^\n]+)", texto_modal, re.IGNORECASE)
+                            m_depto = re.search(r"Departamento\s*\n?\s*([^\n]+)", texto_modal, re.IGNORECASE)
+                            m_ind = re.search(r"Industria\s*\n?\s*([^\n]+)", texto_modal, re.IGNORECASE)
+                            m_cob = re.search(r"Cobrados\s*\n?\s*([^\n]+)", texto_modal, re.IGNORECASE)
+                            m_vig = re.search(r"Vigentes\s*\n?\s*([^\n]+)", texto_modal, re.IGNORECASE)
+                            m_desc = re.search(r"Descontado vigente\s*\n?\s*([^\n]+)", texto_modal, re.IGNORECASE)
+                            m_bman = re.search(r"Bancos que maneja\s*\n?\s*([^\n]+)", texto_modal, re.IGNORECASE)
+                            m_ven = re.search(r"Ventas\s*\n?\s*(\d+)", texto_modal, re.IGNORECASE)
+
+                            for item in detalles_capturados:
+                                if item['librador'] != "-" and item['librador'].lower() in texto_modal_lower:
+                                    if m_banco and item['detBanco'] == "-": item['detBanco'] = limpiar_campo(m_banco.group(1))
+                                    if m_emi and item['detEmision'] == "-": item['detEmision'] = limpiar_campo(m_emi.group(1))
+                                    if m_venc and item['detVencimiento'] in ["-", item['vto']]: item['detVencimiento'] = limpiar_campo(m_venc.group(1))
+                                    if m_razon and item['detRazonSocial'] == "-": item['detRazonSocial'] = limpiar_campo(m_razon.group(1))
+                                    if m_rut and item['detRut'] == "-": item['detRut'] = limpiar_campo(m_rut.group(1))
+                                    if m_dir and item['detDireccion'] == "-": item['detDireccion'] = limpiar_campo(m_dir.group(1))
+                                    if m_depto and item['detDepartamento'] == "-": item['detDepartamento'] = limpiar_campo(m_depto.group(1))
+                                    if m_ind and item['detIndustria'] == "-": item['detIndustria'] = limpiar_campo(m_ind.group(1))
+                                    if m_cob and item['detCobrados'] == "-": item['detCobrados'] = limpiar_campo(m_cob.group(1))
+                                    if m_vig and item['detVigentes'] == "-": item['detVigentes'] = limpiar_campo(m_vig.group(1))
+                                    if m_desc and item['detDescontadoVigente'] == "-": item['detDescontadoVigente'] = limpiar_campo(m_desc.group(1))
+                                    if m_bman and item['detBancosManeja'] == "-": item['detBancosManeja'] = limpiar_campo(m_bman.group(1))
+                                    if m_ven and item['detVentas'] == "-": item['detVentas'] = limpiar_campo(m_ven.group(1))
+                                    break 
+                        
+                        page.keyboard.press("Escape")
+                        page.wait_for_timeout(500)
+                except Exception:
+                    page.keyboard.press("Escape")
+                    page.wait_for_timeout(500)
+        except Exception as e:
+            print(f"Error en enriquecimiento de modales: {e}")
 
     except Exception as e:
         print(f"Error general en extracción de detalles: {e}")
@@ -241,19 +289,35 @@ def obtener_transacciones():
         browser.close()
     return todas_transacciones, todos_detalles
 
+# Filtro anti-duplicados a nivel global antes de enviar a Google Sheets
+def eliminar_duplicados(lista):
+    vistos = set()
+    resultado = []
+    for item in lista:
+        lib = item.get('librador') or item.get('Librador', '')
+        val = item.get('valor') or item.get('Monto', '')
+        moneda = item.get('moneda') or item.get('Moneda', '')
+        firma_unica = f"{lib}_{val}_{moneda}"
+        
+        if firma_unica not in vistos:
+            vistos.add(firma_unica)
+            resultado.append(item)
+    return resultado
+
 def ejecutar():
     nuevas, detalles = obtener_transacciones()
     
-    if nuevas:
-        print(f"Enviando {len(nuevas)} transacciones históricas a Google Sheets...")
-        requests.post(WEBHOOK_URL, json={"transacciones": nuevas})
+    # Aplicar limpieza de duplicados
+    nuevas_limpias = eliminar_duplicados(nuevas)
+    detalles_limpios = eliminar_duplicados(detalles)
     
-    if detalles:
-        print(f"Enviando {len(detalles)} detalles de oportunidades a Google Sheets...")
-        requests.post(WEBHOOK_URL, json={"tipo_evento": "detalles_oportunidades", "detalles": detalles})
+    if nuevas_limpias:
+        print(f"Enviando {len(nuevas_limpias)} transacciones históricas a Google Sheets...")
+        requests.post(WEBHOOK_URL, json={"transacciones": nuevas_limpias})
+    
+    if detalles_limpios:
+        print(f"Enviando {len(detalles_limpios)} detalles de oportunidades a Google Sheets...")
+        requests.post(WEBHOOK_URL, json={"tipo_evento": "detalles_oportunidades", "detalles": detalles_limpios})
 
 if __name__ == "__main__":
-    ejecutar() 
-  
-                 
-      
+    ejecutar()
