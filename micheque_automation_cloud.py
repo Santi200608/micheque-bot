@@ -14,7 +14,7 @@ TITULOS_IGNORAR = [
     "librador", "valor", "vencimiento", "solicitado", "margen neto", 
     "tir neta", "tipo", "bcu", "detalles de la operación", "comprar", "ofertar",
     "disponible para ofertas", "filtrar por", "banco a transferir", "la mejor oferta",
-    "cobrado usd", "bancos a transferir", "bancos que maneja"
+    "cobrado usd", "seleccione...", "seleccione", "cheque", "factura"
 ]
 
 def limpiar_campo(val, default="-"):
@@ -70,7 +70,7 @@ def extraer_detalles_desplegados(page, moneda):
         page.wait_for_timeout(3000)
         
         # ==========================================================
-        # FASE 1: BASE INTOCABLE (A-I) + Búsqueda hacia arriba (J-M)
+        # FASE 1: BASE ESTRICTA (Viernes) A-I
         # ==========================================================
         page.evaluate("""() => {
             const btns = document.querySelectorAll('.v-expansion-panel-header, .v-expansion-panel-title, *');
@@ -101,7 +101,7 @@ def extraer_detalles_desplegados(page, moneda):
                     librador = lineas[i-1] if i-1 >= 0 else ""
                     lib_limpio = limpiar_campo(librador)
 
-                    # Filtro de seguridad
+                    # Filtro anti-basura reforzado (bloquea "Seleccione..." y "Cheque")
                     if (lib_limpio == "-" or 
                         len(lib_limpio) < 2 or 
                         "%" in lib_limpio or 
@@ -110,7 +110,8 @@ def extraer_detalles_desplegados(page, moneda):
                         "mínimo" in lib_limpio.lower() or 
                         "máximo" in lib_limpio.lower() or 
                         "oferta" in lib_limpio.lower() or 
-                        "filtrar por" in lib_limpio.lower()):
+                        "filtrar por" in lib_limpio.lower() or
+                        lib_limpio.lower() in ["seleccione...", "cheque", "factura"]):
                         i += 1
                         continue
 
@@ -119,39 +120,18 @@ def extraer_detalles_desplegados(page, moneda):
                     solicitado = "-"
                     margen = "-"
                     tir = "-"
-                    
                     bcu = "-"
-                    cobrado_usd = "-"
-                    bancos_transferir = "-"
-
-                    for j in range(i+1, min(i+30, len(lineas))):
+                    
+                    # Bucle original estricto
+                    for j in range(i+1, min(i+16, len(lineas))):
                         sub = lineas[j]
                         sub_lower = sub.lower()
-                        
-                        # BLOQUE BASE INTOCABLE (A-I)
                         if re.match(r"^[\d\.\,]{3,15}$", sub) and valor == "-": valor = sub
                         elif ("en " in sub_lower and "días" in sub_lower or re.match(r"^\d{2}/\d{2}/\d{4}$", sub)) and vto == "-": vto = sub
                         elif re.match(r"^[\d\.\,]{3,15}$", sub) and valor != "-" and solicitado == "-": solicitado = sub
                         elif re.match(r"^[\d\.\,]{2,10}$", sub) and solicitado != "-" and margen == "-": margen = sub
                         elif ("%" in sub or re.match(r"^\d{1,2}[\,\.]\d{1,2}$", sub)) and tir == "-": tir = sub
-                        
-                        # BLOQUE INTELIGENTE J-M (Busca el título y retrocede buscando el valor real)
-                        elif sub_lower == "bcu" and bcu == "-":
-                            for k in range(j-1, max(i-1, j-4), -1):
-                                if re.match(r"^\d[A-Za-z]?$", lineas[k]):
-                                    bcu = lineas[k]
-                                    break
-                        elif sub_lower == "cobrado usd" and cobrado_usd == "-":
-                            for k in range(j-1, max(i-1, j-4), -1):
-                                if re.match(r"^[\d\.\,]+$", lineas[k]):
-                                    cobrado_usd = lineas[k]
-                                    break
-                        elif sub_lower == "bancos a transferir" and bancos_transferir == "-":
-                            for k in range(j-1, max(i-1, j-4), -1):
-                                cand = lineas[k]
-                                if len(cand) > 1 and cand.lower() not in TITULOS_IGNORAR and not re.match(r"^[\d\.\,]+$", cand):
-                                    bancos_transferir = cand
-                                    break
+                        elif re.match(r"^\d[A-Za-z]?$", sub) and bcu == "-": bcu = sub
 
                     item = {
                         "moneda": moneda,
@@ -163,8 +143,8 @@ def extraer_detalles_desplegados(page, moneda):
                         "tirNeta": tir,
                         "tipo": tipo,
                         "bcu": bcu,
-                        "cobradoUSD": cobrado_usd,
-                        "bancosATransferir": bancos_transferir,
+                        "cobradoUSD": "-",
+                        "bancosATransferir": "-",
                         "mejorOferta": "-",
                         "detValor": valor,
                         "detBanco": "-",
@@ -188,78 +168,6 @@ def extraer_detalles_desplegados(page, moneda):
                 except Exception:
                     pass
             i += 1
-
-        # ==========================================================
-        # FASE 2: APERTURA DE MODALES Y LECTURA HACIA ABAJO (N-AB)
-        # ==========================================================
-        try:
-            botones_detalle = page.locator("text=/Detalles de la operación/i, text=/Ver detalle/i").all()
-            for btn in botones_detalle:
-                try:
-                    if btn.is_visible():
-                        btn.click(force=True)
-                        page.wait_for_timeout(1500) # Tiempo para que cargue la ventana
-
-                        modal = page.locator(".v-dialog--active, .v-dialog, .v-overlay__content").first
-                        if modal.is_visible():
-                            texto_modal = modal.inner_text()
-                            lineas_m = [l.strip() for l in texto_modal.split("\n") if l.strip() != ""]
-                            
-                            m_nombre = "-"
-                            m_banco = "-"
-                            m_emi = "-"
-                            m_razon = "-"
-                            m_rut = "-"
-                            m_dir = "-"
-                            m_depto = "-"
-                            m_ind = "-"
-                            m_cob = "-"
-                            m_vig = "-"
-                            m_desc = "-"
-                            m_bman = "-"
-                            m_ven = "-"
-                            
-                            # Lectura directa del renglón de abajo
-                            for idx, lm in enumerate(lineas_m):
-                                l_low = lm.lower()
-                                if l_low == "nombre" and idx+1 < len(lineas_m): m_nombre = lineas_m[idx+1]
-                                elif l_low == "banco" and idx+1 < len(lineas_m): m_banco = lineas_m[idx+1]
-                                elif l_low == "emisión" and idx+1 < len(lineas_m): m_emi = lineas_m[idx+1]
-                                elif l_low == "razón social" and idx+1 < len(lineas_m): m_razon = lineas_m[idx+1]
-                                elif l_low == "rut" and idx+1 < len(lineas_m): m_rut = lineas_m[idx+1]
-                                elif l_low == "dirección" and idx+1 < len(lineas_m): m_dir = lineas_m[idx+1]
-                                elif l_low == "departamento" and idx+1 < len(lineas_m): m_depto = lineas_m[idx+1]
-                                elif l_low == "industria" and idx+1 < len(lineas_m): m_ind = lineas_m[idx+1]
-                                elif "cobrados" in l_low and idx+1 < len(lineas_m): m_cob = lineas_m[idx+1]
-                                elif "vigentes" in l_low and idx+1 < len(lineas_m): m_vig = lineas_m[idx+1]
-                                elif "descontado vigente" in l_low and idx+1 < len(lineas_m): m_desc = lineas_m[idx+1]
-                                elif l_low == "bancos que maneja" and idx+1 < len(lineas_m): m_bman = lineas_m[idx+1]
-                                elif l_low == "ventas" and idx+1 < len(lineas_m): m_ven = lineas_m[idx+1]
-
-                            # Vincular el modal con su oferta en la tabla principal
-                            for item in detalles_capturados:
-                                if item['librador'] != "-" and (m_nombre.lower() in item['librador'].lower() or item['librador'].lower() in m_nombre.lower()):
-                                    item['detBanco'] = limpiar_campo(m_banco)
-                                    item['detEmision'] = limpiar_campo(m_emi)
-                                    item['detRazonSocial'] = limpiar_campo(m_razon)
-                                    item['detRut'] = limpiar_campo(m_rut)
-                                    item['detDireccion'] = limpiar_campo(m_dir)
-                                    item['detDepartamento'] = limpiar_campo(m_depto)
-                                    item['detIndustria'] = limpiar_campo(m_ind)
-                                    item['detCobrados'] = limpiar_campo(m_cob)
-                                    item['detVigentes'] = limpiar_campo(m_vig)
-                                    item['detDescontadoVigente'] = limpiar_campo(m_desc)
-                                    item['detBancosManeja'] = limpiar_campo(m_bman)
-                                    item['detVentas'] = limpiar_campo(m_ven)
-                                    break 
-                        
-                        page.keyboard.press("Escape")
-                        page.wait_for_timeout(500)
-                except Exception:
-                    page.keyboard.press("Escape")
-                    page.wait_for_timeout(500)
-        except Exception as e:
-            print(f"Error en enriquecimiento de modales: {e}")
 
     except Exception as e:
         print(f"Error general en extracción de detalles: {e}")
