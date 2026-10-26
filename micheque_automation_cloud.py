@@ -14,7 +14,7 @@ TITULOS_IGNORAR = [
     "librador", "valor", "vencimiento", "solicitado", "margen neto", 
     "tir neta", "tipo", "bcu", "detalles de la operación", "comprar", "ofertar",
     "disponible para ofertas", "filtrar por", "banco a transferir", "la mejor oferta",
-    "cobrado usd", "seleccione...", "seleccione", "cheque", "factura"
+    "cobrado usd", "seleccione...", "seleccione", "cheque", "factura", "transferencia programada"
 ]
 
 def limpiar_campo(val, default="-"):
@@ -25,6 +25,9 @@ def limpiar_campo(val, default="-"):
         return default
     return v
 
+# ==========================================================
+# EXTRACCIÓN HISTÓRICA (MOTOR ORIGINAL)
+# ==========================================================
 def procesar_texto_seccion(texto, moneda_esperada):
     transacciones = []
     lineas = [l.strip() for l in texto.split("\n") if l.strip() != ""]
@@ -42,11 +45,9 @@ def procesar_texto_seccion(texto, moneda_esperada):
                 if any(char.isdigit() for char in monto):
                     es_usd = "USD" in monto
                     es_uys = "UY$" in monto
-
                     if moneda_esperada == "USD" and es_uys and not es_usd:
                         i += 4
                         continue
-
                     moneda_final = "USD" if es_usd else ("UY$" if es_uys else moneda_esperada)
 
                     t = {
@@ -64,14 +65,15 @@ def procesar_texto_seccion(texto, moneda_esperada):
         i += 1
     return transacciones
 
+# ==========================================================
+# EXTRACCIÓN DE OPORTUNIDADES (LECTURA SECUENCIAL Y TOTAL)
+# ==========================================================
 def extraer_detalles_desplegados(page, moneda):
     detalles_capturados = []
     try:
         page.wait_for_timeout(3000)
         
-        # ==========================================================
-        # FASE 1: BASE ESTRICTA (Viernes) A-I
-        # ==========================================================
+        # 1. Desplegar los datos de la vista previa de todas las tarjetas
         page.evaluate("""() => {
             const btns = document.querySelectorAll('.v-expansion-panel-header, .v-expansion-panel-title, *');
             btns.forEach(b => {
@@ -83,91 +85,156 @@ def extraer_detalles_desplegados(page, moneda):
         }""")
         page.wait_for_timeout(2000)
 
-        body_text = page.inner_text("body")
-        lineas = [l.strip() for l in body_text.split("\n") if l.strip() != ""]
+        # 2. Iterar tarjeta por tarjeta de forma estricta
+        tarjetas = page.locator(".v-expansion-panel").all()
+        
+        for tarjeta in tarjetas:
+            try:
+                if not tarjeta.is_visible():
+                    continue
+                    
+                texto_tarjeta = tarjeta.inner_text()
+                lineas = [l.strip() for l in texto_tarjeta.split("\n") if l.strip() != ""]
+                
+                if len(lineas) < 5:
+                    continue
+                
+                # BLOQUE A-I: Extracción Base
+                librador = lineas[0]
+                if librador.lower() in TITULOS_IGNORAR:
+                    librador = lineas[1] if len(lineas) > 1 else "-"
+                
+                lib_limpio = limpiar_campo(librador)
+                
+                if (lib_limpio == "-" or 
+                    len(lib_limpio) < 2 or 
+                    "%" in lib_limpio or 
+                    re.match(r"^\d{1,2}/\d{1,2}/\d{4}$", lib_limpio) or 
+                    lib_limpio.replace(".", "").replace(",", "").isdigit()):
+                    continue
 
-        i = 0
-        while i < len(lineas):
-            linea = lineas[i]
-            linea_lower = linea.lower()
+                valor = "-"
+                vto = "-"
+                solicitado = "-"
+                margen = "-"
+                tir = "-"
+                bcu = "-"
+                cobrado_usd = "-"
+                bancos_transferir = "-"
+                tipo = "Cheque"
 
-            es_cheque = linea_lower == "cheque"
-            es_transf = "transferencia programada" in linea_lower
-            es_factura = linea_lower == "factura"
+                for idx, sub in enumerate(lineas):
+                    sub_lower = sub.lower()
+                    if sub_lower in ["cheque", "factura", "transferencia programada"]: tipo = sub.title()
+                    elif re.match(r"^[\d\.\,]{3,15}$", sub) and valor == "-": valor = sub
+                    elif ("en " in sub_lower and "días" in sub_lower or re.match(r"^\d{2}/\d{2}/\d{4}$", sub)) and vto == "-": vto = sub
+                    elif re.match(r"^[\d\.\,]{3,15}$", sub) and valor != "-" and solicitado == "-": solicitado = sub
+                    elif re.match(r"^[\d\.\,]{2,10}$", sub) and solicitado != "-" and margen == "-": margen = sub
+                    elif ("%" in sub or re.match(r"^\d{1,2}[\,\.]\d{1,2}$", sub)) and tir == "-": tir = sub
+                    
+                    # BLOQUE J-M: Busca la etiqueta y lee HACIA ARRIBA
+                    elif sub_lower == "bcu" and bcu == "-":
+                        for k in range(idx-1, max(-1, idx-4), -1):
+                            if re.match(r"^\d[A-Za-z]?$", lineas[k]):
+                                bcu = lineas[k]
+                                break
+                    elif sub_lower == "cobrado usd" and cobrado_usd == "-":
+                        for k in range(idx-1, max(-1, idx-4), -1):
+                            if re.match(r"^[\d\.\,]+$", lineas[k]):
+                                cobrado_usd = lineas[k]
+                                break
+                    elif sub_lower == "bancos a transferir" and bancos_transferir == "-":
+                        for k in range(idx-1, max(-1, idx-4), -1):
+                            cand = lineas[k]
+                            if len(cand) > 1 and cand.lower() not in TITULOS_IGNORAR and not re.match(r"^[\d\.\,]+$", cand):
+                                bancos_transferir = cand
+                                break
 
-            if es_cheque or es_transf or es_factura:
+                # BLOQUE N-AB: Apertura del Modal en ESTA tarjeta específica
+                detBanco = "-"
+                detEmision = "-"
+                detVencimiento = vto if re.match(r"^\d{2}/\d{2}/\d{4}$", vto) else "-"
+                detRazonSocial = "-"
+                detRut = "-"
+                detDireccion = "-"
+                detDepartamento = "-"
+                detIndustria = "-"
+                detCobrados = "-"
+                detVigentes = "-"
+                detDescontadoVigente = "-"
+                detBancosManeja = "-"
+                detVentas = "-"
+
                 try:
-                    tipo = "Transferencia Programada" if es_transf else ("Factura" if es_factura else "Cheque")
-                    librador = lineas[i-1] if i-1 >= 0 else ""
-                    lib_limpio = limpiar_campo(librador)
+                    btn_modal = tarjeta.locator("button, a, div").filter(has_text=re.compile(r"detalles de la operaci[oó]n|ver detalle", re.IGNORECASE)).first
+                    if btn_modal.is_visible():
+                        btn_modal.click(force=True)
+                        page.wait_for_timeout(1500)
+                        
+                        modal = page.locator(".v-dialog--active, .v-overlay__content").first
+                        if modal.is_visible():
+                            texto_modal = modal.inner_text()
+                            lineas_m = [l.strip() for l in texto_modal.split("\n") if l.strip() != ""]
+                            
+                            # En el modal, el título está ARRIBA y el valor ABAJO
+                            for idx_m, lm in enumerate(lineas_m):
+                                l_low = lm.lower()
+                                if l_low == "banco" and idx_m+1 < len(lineas_m): detBanco = limpiar_campo(lineas_m[idx_m+1])
+                                elif l_low in ["emisión", "emision"] and idx_m+1 < len(lineas_m): detEmision = limpiar_campo(lineas_m[idx_m+1])
+                                elif l_low == "vencimiento" and idx_m+1 < len(lineas_m): 
+                                    v_cand = limpiar_campo(lineas_m[idx_m+1])
+                                    if re.match(r"^\d{2}/\d{2}/\d{4}$", v_cand): detVencimiento = v_cand
+                                elif l_low in ["razón social", "razon social"] and idx_m+1 < len(lineas_m): detRazonSocial = limpiar_campo(lineas_m[idx_m+1])
+                                elif l_low == "rut" and idx_m+1 < len(lineas_m): detRut = limpiar_campo(lineas_m[idx_m+1])
+                                elif l_low in ["dirección", "direccion"] and idx_m+1 < len(lineas_m): detDireccion = limpiar_campo(lineas_m[idx_m+1])
+                                elif l_low == "departamento" and idx_m+1 < len(lineas_m): detDepartamento = limpiar_campo(lineas_m[idx_m+1])
+                                elif l_low == "industria" and idx_m+1 < len(lineas_m): detIndustria = limpiar_campo(lineas_m[idx_m+1])
+                                elif "cobrados" in l_low and idx_m+1 < len(lineas_m): detCobrados = limpiar_campo(lineas_m[idx_m+1])
+                                elif "vigentes" in l_low and idx_m+1 < len(lineas_m): detVigentes = limpiar_campo(lineas_m[idx_m+1])
+                                elif "descontado vigente" in l_low and idx_m+1 < len(lineas_m): detDescontadoVigente = limpiar_campo(lineas_m[idx_m+1])
+                                elif l_low == "bancos que maneja" and idx_m+1 < len(lineas_m): detBancosManeja = limpiar_campo(lineas_m[idx_m+1])
+                                elif l_low == "ventas" and idx_m+1 < len(lineas_m): detVentas = limpiar_campo(lineas_m[idx_m+1])
 
-                    # Filtro anti-basura reforzado (bloquea "Seleccione..." y "Cheque")
-                    if (lib_limpio == "-" or 
-                        len(lib_limpio) < 2 or 
-                        "%" in lib_limpio or 
-                        re.match(r"^\d{1,2}/\d{1,2}/\d{4}$", lib_limpio) or 
-                        lib_limpio.replace(".", "").replace(",", "").isdigit() or 
-                        "mínimo" in lib_limpio.lower() or 
-                        "máximo" in lib_limpio.lower() or 
-                        "oferta" in lib_limpio.lower() or 
-                        "filtrar por" in lib_limpio.lower() or
-                        lib_limpio.lower() in ["seleccione...", "cheque", "factura"]):
-                        i += 1
-                        continue
-
-                    valor = "-"
-                    vto = "-"
-                    solicitado = "-"
-                    margen = "-"
-                    tir = "-"
-                    bcu = "-"
-                    
-                    # Bucle original estricto
-                    for j in range(i+1, min(i+16, len(lineas))):
-                        sub = lineas[j]
-                        sub_lower = sub.lower()
-                        if re.match(r"^[\d\.\,]{3,15}$", sub) and valor == "-": valor = sub
-                        elif ("en " in sub_lower and "días" in sub_lower or re.match(r"^\d{2}/\d{2}/\d{4}$", sub)) and vto == "-": vto = sub
-                        elif re.match(r"^[\d\.\,]{3,15}$", sub) and valor != "-" and solicitado == "-": solicitado = sub
-                        elif re.match(r"^[\d\.\,]{2,10}$", sub) and solicitado != "-" and margen == "-": margen = sub
-                        elif ("%" in sub or re.match(r"^\d{1,2}[\,\.]\d{1,2}$", sub)) and tir == "-": tir = sub
-                        elif re.match(r"^\d[A-Za-z]?$", sub) and bcu == "-": bcu = sub
-
-                    item = {
-                        "moneda": moneda,
-                        "librador": lib_limpio,
-                        "valor": valor,
-                        "vto": vto,
-                        "solicitado": solicitado,
-                        "margenNeto": margen,
-                        "tirNeta": tir,
-                        "tipo": tipo,
-                        "bcu": bcu,
-                        "cobradoUSD": "-",
-                        "bancosATransferir": "-",
-                        "mejorOferta": "-",
-                        "detValor": valor,
-                        "detBanco": "-",
-                        "detEmision": "-",
-                        "detVencimiento": vto if re.match(r"^\d{2}/\d{2}/\d{4}$", vto) else "-",
-                        "detNombre": lib_limpio,
-                        "detRazonSocial": "-",
-                        "detRut": "-",
-                        "detDireccion": "-",
-                        "detDepartamento": "-",
-                        "detIndustria": "-",
-                        "detCobrados": "-",
-                        "detVigentes": "-",
-                        "detDescontadoVigente": "-",
-                        "detBancosManeja": "-",
-                        "detVentas": "-"
-                    }
-                    
-                    if item["librador"] != "-" and item["valor"] != "-":
-                        detalles_capturados.append(item)
+                        page.keyboard.press("Escape")
+                        page.wait_for_timeout(500)
                 except Exception:
-                    pass
-            i += 1
+                    page.keyboard.press("Escape")
+                    page.wait_for_timeout(500)
+
+                item = {
+                    "moneda": moneda,
+                    "librador": lib_limpio,
+                    "valor": valor,
+                    "vto": vto,
+                    "solicitado": solicitado,
+                    "margenNeto": margen,
+                    "tirNeta": tir,
+                    "tipo": tipo,
+                    "bcu": bcu,
+                    "cobradoUSD": cobrado_usd,
+                    "bancosATransferir": bancos_transferir,
+                    "mejorOferta": "-",
+                    "detValor": valor,
+                    "detBanco": detBanco,
+                    "detEmision": detEmision,
+                    "detVencimiento": detVencimiento,
+                    "detNombre": lib_limpio,
+                    "detRazonSocial": detRazonSocial,
+                    "detRut": detRut,
+                    "detDireccion": detDireccion,
+                    "detDepartamento": detDepartamento,
+                    "detIndustria": detIndustria,
+                    "detCobrados": detCobrados,
+                    "detVigentes": detVigentes,
+                    "detDescontadoVigente": detDescontadoVigente,
+                    "detBancosManeja": detBancosManeja,
+                    "detVentas": detVentas
+                }
+                
+                if item["librador"] != "-" and item["valor"] != "-":
+                    detalles_capturados.append(item)
+            except Exception:
+                continue
 
     except Exception as e:
         print(f"Error general en extracción de detalles: {e}")
