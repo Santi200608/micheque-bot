@@ -29,15 +29,14 @@ def procesar_oportunidades_pantalla(page, moneda):
     detalles_capturados = []
     page.wait_for_timeout(3000)
 
-    # 1. Hacer clic en los elementos que abren/expanden cada operación
-    # En MiCheque hacer clic en el texto del librador o tipo expande la tarjeta
+    # 1. Desplegar operaciones
     try:
         elementos_a_abrir = page.locator("text=/Cheque/i, text=/Factura/i, text=/Transferencia/i").all()
         for elem in elementos_a_abrir:
             try:
                 if elem.is_visible():
                     elem.click(force=True)
-                    page.wait_for_timeout(300)
+                    page.wait_for_timeout(250)
             except Exception:
                 pass
     except Exception:
@@ -45,7 +44,7 @@ def procesar_oportunidades_pantalla(page, moneda):
 
     page.wait_for_timeout(2000)
 
-    # 2. Lectura directa del texto completo de la página
+    # 2. Lectura secuencial por líneas
     body_text = page.inner_text("body")
     lineas = [l.strip() for l in body_text.split("\n") if l.strip() != ""]
 
@@ -85,7 +84,6 @@ def procesar_oportunidades_pantalla(page, moneda):
                 cobrado_usd = "-"
                 bancos_transferir = "-"
 
-                # Barrido hacia adelante buscando los datos de la oportunidad
                 for j in range(i+1, min(i+35, len(lineas))):
                     sub = lineas[j]
                     sub_low = sub.lower()
@@ -96,7 +94,6 @@ def procesar_oportunidades_pantalla(page, moneda):
                     elif re.match(r"^[\d\.\,]{2,10}$", sub) and solicitado != "-" and margen == "-": margen = sub
                     elif ("%" in sub or re.match(r"^\d{1,2}[\,\.]\d{1,2}$", sub)) and tir == "-": tir = sub
                     
-                    # BCU, Cobrado USD, Bancos a transferir
                     elif sub_low == "bcu" and bcu == "-":
                         for k in range(j-1, max(i-1, j-4), -1):
                             if re.match(r"^[1-5][A-Za-z]?$", lineas[k]):
@@ -148,32 +145,20 @@ def procesar_oportunidades_pantalla(page, moneda):
                     "detVentas": "-"
                 }
                 
-                # Evitar registros duplicados en el mismo array
+                # Se agrega CADA operación legítima detectada en pantalla, sin descartar gemelas
                 if item["librador"] != "-" and item["valor"] != "-":
-                    ya_cargado = any(x["librador"] == item["librador"] and x["valor"] == item["valor"] for x in detalles_capturados)
-                    if not ya_cargado:
-                        detalles_capturados.append(item)
+                    detalles_capturados.append(item)
             except Exception:
                 pass
         i += 1
 
-    print(f"[{moneda}] Oportunidades encontradas: {len(detalles_capturados)}")
+    print(f"[{moneda}] Oportunidades detectadas en pantalla: {len(detalles_capturados)}")
 
     # 3. Interacción con Tooltips y Modales
     try:
-        # Hover en BPS, DGI, Inforcheck para activar tooltips
-        for tag in ["BPS", "DGI", "Inforcheck", "Relación comercial"]:
-            elems = page.locator(f"text={tag}").all()
-            for el in elems:
-                try:
-                    if el.is_visible():
-                        el.hover(force=True)
-                        page.wait_for_timeout(200)
-                except Exception:
-                    pass
-
-        # Buscar todos los botones que abren el detalle
         botones_detalle = page.locator("button:has-text('Detalle'), a:has-text('Detalle'), button:has(.v-icon)").all()
+        modales_abiertos = 0
+
         for btn in botones_detalle:
             try:
                 txt_btn = (btn.inner_text() or "").lower()
@@ -187,7 +172,6 @@ def procesar_oportunidades_pantalla(page, moneda):
                 btn.click(force=True)
                 page.wait_for_timeout(1000)
 
-                # Si el modal está visible, extraer datos
                 modal = page.locator(".v-dialog--active:visible, div[role='dialog']:visible").first
                 if modal.is_visible():
                     texto_m = modal.inner_text()
@@ -213,9 +197,9 @@ def procesar_oportunidades_pantalla(page, moneda):
                         elif "maneja" in l_low and idx_m+1 < len(lineas_m): m_bman = lineas_m[idx_m+1]
                         elif "ventas" in l_low and idx_m+1 < len(lineas_m): m_ven = lineas_m[idx_m+1]
 
-                    # Asociar los datos del modal a la oportunidad correspondiente
+                    # Se asocia al primer ítem pendiente que coincida en nombre (consumiendo uno a uno para cheques mellizos)
                     for item in detalles_capturados:
-                        if m_nom != "-" and (m_nom.lower() in item['librador'].lower() or item['librador'].lower() in m_nom.lower()):
+                        if item.get("detRut") == "-" and m_nom != "-" and (m_nom.lower() in item['librador'].lower() or item['librador'].lower() in m_nom.lower()):
                             item['detBanco'] = limpiar_campo(m_banco)
                             item['detEmision'] = limpiar_campo(m_emi)
                             item['detRazonSocial'] = limpiar_campo(m_razon)
@@ -228,6 +212,7 @@ def procesar_oportunidades_pantalla(page, moneda):
                             item['detDescontadoVigente'] = limpiar_campo(m_desc)
                             item['detBancosManeja'] = limpiar_campo(m_bman)
                             item['detVentas'] = limpiar_campo(m_ven)
+                            modales_abiertos += 1
                             break
 
                 page.keyboard.press("Escape")
@@ -235,7 +220,7 @@ def procesar_oportunidades_pantalla(page, moneda):
             except Exception:
                 page.keyboard.press("Escape")
     except Exception as e:
-        print(f"Error procesando modales: {e}")
+        print(f"Aviso procesando modales: {e}")
 
     return detalles_capturados
 
@@ -286,8 +271,9 @@ def ejecutar():
         browser.close()
 
     if todos_detalles:
-        print(f"Enviando {len(todos_detalles)} registros a Google Sheets...")
-        requests.post(WEBHOOK_URL, json={"detalles": todos_detalles})
+        print(f"Enviando {len(todos_detalles)} oportunidades al webhook...")
+        resp = requests.post(WEBHOOK_URL, json={"detalles": todos_detalles})
+        print(f"Respuesta del servidor: {resp.text}")
     else:
         print("No se encontraron oportunidades en esta corrida.")
 
