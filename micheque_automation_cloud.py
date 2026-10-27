@@ -63,11 +63,15 @@ def procesar_texto_seccion(texto, moneda_esperada):
         i += 1
     return transacciones
 
+# ==============================================================================
+# BASE DE EXTRACCIÓN ROBUSTA (PROBADA Y FUNCIONAL)
+# ==============================================================================
 def extraer_detalles_desplegados(page, moneda):
     detalles_capturados = []
     try:
         page.wait_for_timeout(3000)
         
+        # Clics para desplegar la información de la tarjeta (TIR, BCU, etc.)
         page.evaluate("""() => {
             const btns = document.querySelectorAll('*');
             btns.forEach(b => {
@@ -97,6 +101,7 @@ def extraer_detalles_desplegados(page, moneda):
                     librador = lineas[i-1] if i-1 >= 0 else ""
                     lib_limpio = limpiar_campo(librador)
 
+                    # Filtro de seguridad anti-filas basura
                     if (lib_limpio == "-" or 
                         len(lib_limpio) < 2 or 
                         "%" in lib_limpio or 
@@ -118,6 +123,7 @@ def extraer_detalles_desplegados(page, moneda):
 
                     for j in range(i+1, min(i+14, len(lineas))):
                         sub = lineas[j]
+                        
                         if re.match(r"^[\d\.\,]{3,15}$", sub) and valor == "-":
                             valor = sub
                         elif ("en " in sub.lower() and "días" in sub.lower() or re.match(r"^\d{2}/\d{2}/\d{4}$", sub)) and vto == "-":
@@ -143,10 +149,6 @@ def extraer_detalles_desplegados(page, moneda):
                         "bcu": bcu,
                         "cobradoUSD": "-",
                         "bancosATransferir": "-",
-                        "bps": "-",
-                        "dgi": "-",
-                        "inforcheck": "-",
-                        "relacionComercial": "-",
                         "mejorOferta": "-",
                         "detValor": valor,
                         "detBanco": "-",
@@ -184,6 +186,7 @@ def obtener_transacciones():
         browser = p.chromium.launch(headless=True)
         page = browser.new_page(viewport={"width": 1400, "height": 900})
         
+        # 1. Login
         print("Iniciando sesión en MiCheque...")
         page.goto(URL_LOGIN, wait_until="networkidle")
         page.wait_for_timeout(2000)
@@ -193,6 +196,7 @@ def obtener_transacciones():
         page.keyboard.press("Enter")
         page.wait_for_timeout(4000)
         
+        # 2. Mercado
         print("Navegando al mercado...")
         page.goto(URL_MARKET, wait_until="networkidle")
         page.wait_for_timeout(5000)
@@ -200,6 +204,7 @@ def obtener_transacciones():
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         page.wait_for_timeout(2000)
 
+        # 3. Pesos
         print("Extrayendo sección Pesos...")
         texto_pesos = page.inner_text("body")
         pesos = procesar_texto_seccion(texto_pesos, "UY$")
@@ -208,6 +213,7 @@ def obtener_transacciones():
         detalles_uy = extraer_detalles_desplegados(page, "UY$")
         todos_detalles.extend(detalles_uy)
 
+        # 4. Dólares
         print("Cambiando vista a Dólares...")
         try:
             elementos_usd = page.query_selector_all("button, div, span, a")
@@ -248,4 +254,3 @@ def ejecutar():
 
 if __name__ == "__main__":
     ejecutar()
-Borra en tu planilla las filas desplazadas (desde la 6716 en adelante) y ejecuta. Las nuevas inserciones volverán a colocarse a partir de la columna B, dejando la columna A vacía y manteniendo intactas tus fórmulas de las columnas H, I y J.
