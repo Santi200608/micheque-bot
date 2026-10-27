@@ -25,26 +25,27 @@ def limpiar_campo(val, default="-"):
         return default
     return v
 
-def extraer_oportunidades_completas(page, moneda):
+def procesar_oportunidades_pantalla(page, moneda):
     detalles_capturados = []
     page.wait_for_timeout(3000)
 
-    # 1. Expandir paneles con clics en flechas o texto TIR
+    # 1. Hacer clic en los elementos que abren/expanden cada operación
+    # En MiCheque hacer clic en el texto del librador o tipo expande la tarjeta
     try:
-        page.evaluate("""() => {
-            const btns = document.querySelectorAll('*');
-            btns.forEach(b => {
-                const txt = (b.innerText || '').toLowerCase();
-                if (txt.includes('tir') || txt.includes('%') || (b.className && typeof b.className === 'string' && (b.className.includes('chevron') || b.className.includes('arrow')))) {
-                    try { b.click(); } catch(e){}
-                }
-            });
-        }""")
+        elementos_a_abrir = page.locator("text=/Cheque/i, text=/Factura/i, text=/Transferencia/i").all()
+        for elem in elementos_a_abrir:
+            try:
+                if elem.is_visible():
+                    elem.click(force=True)
+                    page.wait_for_timeout(300)
+            except Exception:
+                pass
     except Exception:
         pass
-    page.wait_for_timeout(2500)
 
-    # 2. Lectura garantizada por texto de la página
+    page.wait_for_timeout(2000)
+
+    # 2. Lectura directa del texto completo de la página
     body_text = page.inner_text("body")
     lineas = [l.strip() for l in body_text.split("\n") if l.strip() != ""]
 
@@ -63,7 +64,6 @@ def extraer_oportunidades_completas(page, moneda):
                 librador = lineas[i-1] if i-1 >= 0 else ""
                 lib_limpio = limpiar_campo(librador)
 
-                # Evitar títulos o cabeceras
                 if (lib_limpio == "-" or 
                     len(lib_limpio) < 2 or 
                     "%" in lib_limpio or 
@@ -85,7 +85,8 @@ def extraer_oportunidades_completas(page, moneda):
                 cobrado_usd = "-"
                 bancos_transferir = "-"
 
-                for j in range(i+1, min(i+25, len(lineas))):
+                # Barrido hacia adelante buscando los datos de la oportunidad
+                for j in range(i+1, min(i+35, len(lineas))):
                     sub = lineas[j]
                     sub_low = sub.lower()
                     
@@ -94,6 +95,8 @@ def extraer_oportunidades_completas(page, moneda):
                     elif re.match(r"^[\d\.\,]{3,15}$", sub) and valor != "-" and solicitado == "-": solicitado = sub
                     elif re.match(r"^[\d\.\,]{2,10}$", sub) and solicitado != "-" and margen == "-": margen = sub
                     elif ("%" in sub or re.match(r"^\d{1,2}[\,\.]\d{1,2}$", sub)) and tir == "-": tir = sub
+                    
+                    # BCU, Cobrado USD, Bancos a transferir
                     elif sub_low == "bcu" and bcu == "-":
                         for k in range(j-1, max(i-1, j-4), -1):
                             if re.match(r"^[1-5][A-Za-z]?$", lineas[k]):
@@ -145,54 +148,46 @@ def extraer_oportunidades_completas(page, moneda):
                     "detVentas": "-"
                 }
                 
-                # Evitar registros vacíos o duplicados en el mismo array
+                # Evitar registros duplicados en el mismo array
                 if item["librador"] != "-" and item["valor"] != "-":
-                    ya_existe = any(x["librador"] == item["librador"] and x["valor"] == item["valor"] for x in detalles_capturados)
-                    if not ya_existe:
+                    ya_cargado = any(x["librador"] == item["librador"] and x["valor"] == item["valor"] for x in detalles_capturados)
+                    if not ya_cargado:
                         detalles_capturados.append(item)
             except Exception:
                 pass
         i += 1
 
-    print(f"[{moneda}] Oportunidades base encontradas: {len(detalles_capturados)}")
+    print(f"[{moneda}] Oportunidades encontradas: {len(detalles_capturados)}")
 
     # 3. Interacción con Tooltips y Modales
     try:
-        botones_detalle = page.locator("button:has-text('Detalle'), a:has-text('Detalle'), .v-btn:has-text('Detalles')").all()
-        print(f"[{moneda}] Botones de detalle encontrados: {len(botones_detalle)}")
+        # Hover en BPS, DGI, Inforcheck para activar tooltips
+        for tag in ["BPS", "DGI", "Inforcheck", "Relación comercial"]:
+            elems = page.locator(f"text={tag}").all()
+            for el in elems:
+                try:
+                    if el.is_visible():
+                        el.hover(force=True)
+                        page.wait_for_timeout(200)
+                except Exception:
+                    pass
 
-        for b_idx, btn in enumerate(botones_detalle):
+        # Buscar todos los botones que abren el detalle
+        botones_detalle = page.locator("button:has-text('Detalle'), a:has-text('Detalle'), button:has(.v-icon)").all()
+        for btn in botones_detalle:
             try:
+                txt_btn = (btn.inner_text() or "").lower()
+                if "detalle" not in txt_btn and not btn.locator(".mdi-information, .mdi-eye").count():
+                    continue
+
                 if not btn.is_visible():
                     continue
 
                 btn.scroll_into_view_if_needed()
-
-                # Hover en tooltips
-                m_bps, m_dgi, m_inf, m_rel = "-", "-", "-", "-"
-                try:
-                    contenedor = btn.locator("xpath=./ancestor::div[contains(@class, 'v-expansion-panel') or contains(@class, 'v-card') or contains(@class, 'card')]").first
-                    if contenedor.is_visible():
-                        for tag, var_name in [("BPS", "bps"), ("DGI", "dgi"), ("Inforcheck", "inf"), ("Relación", "rel")]:
-                            elem = contenedor.locator(f"text={tag}").first
-                            if elem.is_visible():
-                                elem.hover(force=True)
-                                page.wait_for_timeout(300)
-                                tip = page.locator(".v-tooltip__content:visible, div[role='tooltip']:visible").last
-                                if tip.is_visible():
-                                    t_txt = tip.inner_text().strip()
-                                    if var_name == "bps": m_bps = t_txt
-                                    elif var_name == "dgi": m_dgi = t_txt
-                                    elif var_name == "inf": m_inf = t_txt
-                                    elif var_name == "rel": m_rel = t_txt
-                                page.mouse.move(0, 0)
-                except Exception:
-                    pass
-
-                # Clic en modal
                 btn.click(force=True)
                 page.wait_for_timeout(1000)
 
+                # Si el modal está visible, extraer datos
                 modal = page.locator(".v-dialog--active:visible, div[role='dialog']:visible").first
                 if modal.is_visible():
                     texto_m = modal.inner_text()
@@ -218,13 +213,9 @@ def extraer_oportunidades_completas(page, moneda):
                         elif "maneja" in l_low and idx_m+1 < len(lineas_m): m_bman = lineas_m[idx_m+1]
                         elif "ventas" in l_low and idx_m+1 < len(lineas_m): m_ven = lineas_m[idx_m+1]
 
-                    # Cruzar datos con el ítem correspondiente
+                    # Asociar los datos del modal a la oportunidad correspondiente
                     for item in detalles_capturados:
                         if m_nom != "-" and (m_nom.lower() in item['librador'].lower() or item['librador'].lower() in m_nom.lower()):
-                            if m_bps != "-": item['bps'] = limpiar_campo(m_bps)
-                            if m_dgi != "-": item['dgi'] = limpiar_campo(m_dgi)
-                            if m_inf != "-": item['inforcheck'] = limpiar_campo(m_inf)
-                            if m_rel != "-": item['relacionComercial'] = limpiar_campo(m_rel)
                             item['detBanco'] = limpiar_campo(m_banco)
                             item['detEmision'] = limpiar_campo(m_emi)
                             item['detRazonSocial'] = limpiar_campo(m_razon)
@@ -267,8 +258,8 @@ def ejecutar():
         page.wait_for_timeout(5000)
 
         # 1. Pesos
-        print("Extrayendo oportunidades en Pesos...")
-        detalles_uy = extraer_oportunidades_completas(page, "UY$")
+        print("Buscando oportunidades en Pesos...")
+        detalles_uy = procesar_oportunidades_pantalla(page, "UY$")
         todos_detalles.extend(detalles_uy)
 
         # 2. Dólares
@@ -286,8 +277,8 @@ def ejecutar():
                     continue
 
             page.wait_for_timeout(4000)
-            print("Extrayendo oportunidades en Dólares...")
-            detalles_usd = extraer_oportunidades_completas(page, "USD")
+            print("Buscando oportunidades en Dólares...")
+            detalles_usd = procesar_oportunidades_pantalla(page, "USD")
             todos_detalles.extend(detalles_usd)
         except Exception as e:
             print(f"Error al cambiar a USD: {e}")
@@ -295,10 +286,10 @@ def ejecutar():
         browser.close()
 
     if todos_detalles:
-        print(f"Enviando {len(todos_detalles)} registros únicos a la planilla de Oportunidades...")
+        print(f"Enviando {len(todos_detalles)} registros a Google Sheets...")
         requests.post(WEBHOOK_URL, json={"detalles": todos_detalles})
     else:
-        print("No se encontraron oportunidades.")
+        print("No se encontraron oportunidades en esta corrida.")
 
 if __name__ == "__main__":
     ejecutar()
