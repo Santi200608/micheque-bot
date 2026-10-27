@@ -28,39 +28,26 @@ def limpiar_campo(val, default="-"):
 def procesar_tarjetas_oportunidad(page, moneda):
     detalles = []
     
-    # 1. Expandir todas las tarjetas primero
-    try:
-        expand_buttons = page.locator(".v-expansion-panel-header, button:has(.mdi-chevron-down), .v-expansion-panel-title").all()
-        for b in expand_buttons:
-            try:
-                b.click(timeout=1000)
-                page.wait_for_timeout(200)
-            except Exception:
-                pass
-    except Exception:
-        pass
+    # En Vuetify, cada oportunidad es un expansion panel estricto
+    paneles = page.locator(".v-expansion-panel").all()
+    print(f"[{moneda}] Paneles de oportunidad encontrados: {len(paneles)}")
 
-    page.wait_for_timeout(2000)
-
-    # 2. Localizar tarjetas o paneles de operaciones
-    tarjetas = page.locator(".v-expansion-panel, .v-card, div[role='region']").all()
-    
-    # Si no detecta con esos contenedores, busca por bloques que tengan "TIR" o "Margen"
-    if not tarjetas:
-        tarjetas = page.locator("div:has-text('TIR'):has-text('Valor')").all()
-
-    print(f"[{moneda}] Contenedores encontrados: {len(tarjetas)}")
-
-    for idx, card in enumerate(tarjetas):
+    for idx, panel in enumerate(paneles):
         try:
-            texto_card = card.inner_text()
-            if not texto_card or ("cheque" not in texto_card.lower() and "factura" not in texto_card.lower() and "transferencia" not in texto_card.lower()):
-                continue
+            # 1. Asegurar que este panel específico esté abierto
+            header = panel.locator(".v-expansion-panel-header").first
+            if header.is_visible():
+                # Si el panel no tiene la clase active, hacemos clic para desplegarlo
+                panel_class = panel.get_attribute("class") or ""
+                if "v-expansion-panel--active" not in panel_class:
+                    header.click(force=True)
+                    page.wait_for_timeout(600)
 
-            lineas = [l.strip() for l in texto_card.split("\n") if l.strip() != ""]
+            # 2. Extraer datos principales del panel
+            texto_panel = panel.inner_text()
+            lineas = [l.strip() for l in texto_panel.split("\n") if l.strip() != ""]
 
-            # Extracción básica de columnas B a I
-            librador, tipo, valor, vto, solicitado, margen, tir = "-", "-", "-", "-", "-", "-", "-"
+            tipo, librador, valor, vto, solicitado, margen, tir = "-", "-", "-", "-", "-", "-", "-"
             bcu, cobrado_usd, bancos_transferir = "-", "-", "-"
 
             for i, linea in enumerate(lineas):
@@ -69,7 +56,7 @@ def procesar_tarjetas_oportunidad(page, moneda):
                 elif "transferencia programada" in l_low: tipo = "Transferencia Programada"
                 elif l_low == "factura": tipo = "Factura"
 
-                if (tipo != "-" and librador == "-" and i > 0):
+                if tipo != "-" and librador == "-" and i > 0:
                     cand_lib = limpiar_campo(lineas[i-1])
                     if cand_lib != "-" and not re.match(r"^\d", cand_lib) and "%" not in cand_lib:
                         librador = cand_lib
@@ -80,19 +67,19 @@ def procesar_tarjetas_oportunidad(page, moneda):
                 elif re.match(r"^[\d\.\,]{2,10}$", linea) and solicitado != "-" and margen == "-": margen = linea
                 elif ("%" in linea or re.match(r"^\d{1,2}[\,\.]\d{1,2}$", linea)) and tir == "-": tir = linea
 
-                # BCU, Cobrado USD, Bancos a transferir
+                # BCU, Cobrado USD, Bancos
                 if l_low == "bcu" and bcu == "-":
                     for k in range(max(0, i-4), min(len(lineas), i+4)):
                         if re.match(r"^[1-5][A-Za-z]?$", lineas[k]):
                             bcu = lineas[k]
                             break
                 elif "cobrado usd" in l_low and cobrado_usd == "-":
-                    for k in range(max(0, i-2), min(len(lineas), i+3)):
+                    for k in range(max(0, i-3), min(len(lineas), i+4)):
                         if re.match(r"^[\d\.\,]+$", lineas[k]) and lineas[k] != valor:
                             cobrado_usd = lineas[k]
                             break
                 elif "bancos a transferir" in l_low and bancos_transferir == "-":
-                    for k in range(max(0, i-2), min(len(lineas), i+3)):
+                    for k in range(max(0, i-3), min(len(lineas), i+4)):
                         cand_b = lineas[k]
                         if cand_b.lower() not in TITULOS_IGNORAR and not re.match(r"^[\d\.\,]+$", cand_b):
                             bancos_transferir = cand_b
@@ -101,15 +88,17 @@ def procesar_tarjetas_oportunidad(page, moneda):
             if librador == "-" and len(lineas) > 0:
                 librador = limpiar_campo(lineas[0])
 
-            # Tooltips (hover) en BPS, DGI, Inforcheck, Relacion Comercial
+            # 3. Tooltips (BPS, DGI, Inforcheck, Relación comercial) dentro de este panel
             bps, dgi, inforcheck, rel_comercial = "-", "-", "-", "-"
+            content_area = panel.locator(".v-expansion-panel-content").first
+            
             for tag_nombre, var_code in [("BPS", "bps"), ("DGI", "dgi"), ("Inforcheck", "inf"), ("Relación", "rel")]:
                 try:
-                    elem_tag = card.locator(f"text={tag_nombre}").first
+                    elem_tag = content_area.locator(f"text={tag_nombre}").first
                     if elem_tag.is_visible():
                         elem_tag.hover(force=True)
                         page.wait_for_timeout(300)
-                        tip = page.locator(".v-tooltip__content:visible, div[role='tooltip']:visible").last
+                        tip = page.locator(".v-tooltip__content:visible").last
                         if tip.is_visible():
                             txt_tip = tip.inner_text().strip()
                             if var_code == "bps": bps = txt_tip
@@ -120,7 +109,7 @@ def procesar_tarjetas_oportunidad(page, moneda):
                 except Exception:
                     pass
 
-            # Modal de Detalles de la operación
+            # 4. Modal "Detalles de la operación"
             det_valor = valor
             det_banco, det_emision, det_vencimiento = "-", "-", vto
             det_nombre, det_razon, det_rut, det_dir = librador, "-", "-", "-"
@@ -128,16 +117,17 @@ def procesar_tarjetas_oportunidad(page, moneda):
             det_cob, det_vig, det_desc, det_bman, det_ven = "-", "-", "-", "-", "-"
 
             try:
-                btn_modal = card.locator("button:has-text('Detalle'), a:has-text('Detalle'), .v-btn:has-text('Detalle')").first
+                btn_modal = panel.locator("button:has-text('Detalle'), a:has-text('Detalle')").first
                 if not btn_modal.is_visible():
-                    btn_modal = card.locator("button:has(.mdi-information), button:has(.mdi-eye)").first
+                    btn_modal = panel.locator("button:has(.mdi-information), button:has(.mdi-eye)").first
 
                 if btn_modal.is_visible():
                     btn_modal.scroll_into_view_if_needed()
                     btn_modal.click(force=True)
                     page.wait_for_timeout(1000)
 
-                    modal = page.locator(".v-dialog--active, div[role='dialog']:visible").first
+                    # Espera a que el modal aparezca
+                    modal = page.locator(".v-dialog--active:visible").first
                     if modal.is_visible():
                         txt_m = modal.inner_text()
                         l_m = [lm.strip() for lm in txt_m.split("\n") if lm.strip() != ""]
@@ -159,10 +149,11 @@ def procesar_tarjetas_oportunidad(page, moneda):
                             elif "maneja" in lm_low and im+1 < len(l_m): det_bman = l_m[im+1]
                             elif "ventas" in lm_low and im+1 < len(l_m): det_ven = l_m[im+1]
 
-                        page.keyboard.press("Escape")
-                        page.wait_for_timeout(400)
+                    # Cerrar modal
+                    page.keyboard.press("Escape")
+                    page.wait_for_timeout(400)
             except Exception as e_mod:
-                print(f"Error procesando modal en tarjeta {idx}: {e_mod}")
+                print(f"Aviso modal panel {idx}: {e_mod}")
                 page.keyboard.press("Escape")
 
             item = {
@@ -202,8 +193,8 @@ def procesar_tarjetas_oportunidad(page, moneda):
             if librador != "-" or valor != "-":
                 detalles.append(item)
 
-        except Exception as e_card:
-            print(f"Error procesando tarjeta {idx}: {e_card}")
+        except Exception as e_panel:
+            print(f"Error procesando panel {idx}: {e_panel}")
 
     return detalles
 
@@ -213,7 +204,7 @@ def ejecutar():
         browser = p.chromium.launch(headless=True)
         page = browser.new_page(viewport={"width": 1400, "height": 900})
 
-        print("Iniciando sesión...")
+        print("Iniciando sesión en MiCheque...")
         page.goto(URL_LOGIN, wait_until="networkidle")
         page.wait_for_timeout(2000)
         page.fill("input[type='email'], input[name='email'], input[type='text']", USERNAME)
@@ -221,12 +212,12 @@ def ejecutar():
         page.keyboard.press("Enter")
         page.wait_for_timeout(4000)
 
-        print("Cargando mercado...")
+        print("Accediendo al mercado...")
         page.goto(URL_MARKET, wait_until="networkidle")
         page.wait_for_timeout(5000)
 
         # 1. Pesos
-        print("Procesando Pesos...")
+        print("Extrayendo oportunidades en Pesos...")
         detalles_uy = procesar_tarjetas_oportunidad(page, "UY$")
         todos_detalles.extend(detalles_uy)
 
@@ -245,16 +236,16 @@ def ejecutar():
                     continue
 
             page.wait_for_timeout(4000)
-            print("Procesando Dólares...")
+            print("Extrayendo oportunidades en Dólares...")
             detalles_usd = procesar_tarjetas_oportunidad(page, "USD")
             todos_detalles.extend(detalles_usd)
         except Exception as e:
-            print(f"Error cambiando a USD: {e}")
+            print(f"Error al cambiar a USD: {e}")
 
         browser.close()
 
     if todos_detalles:
-        print(f"Enviando {len(todos_detalles)} oportunidades a Sheets...")
+        print(f"Enviando {len(todos_detalles)} registros únicos a la planilla de Oportunidades...")
         requests.post(WEBHOOK_URL, json={"detalles": todos_detalles})
 
 if __name__ == "__main__":
