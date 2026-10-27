@@ -101,7 +101,7 @@ def ejecutar():
         browser.close()
 
     if todas_transacciones:
-        print(f"Enviando {len(todas_transacciones)} registros históricos a Google Sheets...")
+        print(f"Enviando {len(todas_transacciones)} registros al Google Sheets...")
         requests.post(WEBHOOK_URL, json={"transacciones": todas_transacciones})
 
 if __name__ == "__main__":
