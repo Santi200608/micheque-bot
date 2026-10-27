@@ -14,7 +14,7 @@ TITULOS_IGNORAR = [
     "librador", "valor", "vencimiento", "solicitado", "margen neto", 
     "tir neta", "tipo", "bcu", "detalles de la operación", "comprar", "ofertar",
     "disponible para ofertas", "filtrar por", "banco a transferir", "la mejor oferta",
-    "cobrado usd", "bancos a transferir", "bancos que maneja"
+    "cobrado usd", "bancos a transferir", "bancos que maneja", "ver detalle", "detalles"
 ]
 
 def limpiar_campo(val, default="-"):
@@ -29,22 +29,25 @@ def procesar_oportunidades_pantalla(page, moneda):
     detalles_capturados = []
     page.wait_for_timeout(3000)
 
-    # 1. Desplegar operaciones
-    try:
-        elementos_a_abrir = page.locator("text=/Cheque/i, text=/Factura/i, text=/Transferencia/i").all()
-        for elem in elementos_a_abrir:
-            try:
-                if elem.is_visible():
-                    elem.click(force=True)
-                    page.wait_for_timeout(250)
-            except Exception:
-                pass
-    except Exception:
-        pass
+    # 1. Forzar apertura de todos los paneles/tarjetas colapsadas vía JS
+    print(f"[{moneda}] Expandiendo tarjetas...")
+    page.evaluate("""() => {
+        // Clic en todos los botones con chevrons, flechas o encabezados de expansión
+        const headers = document.querySelectorAll('.v-expansion-panel-header, button i.mdi-chevron-down, button i.mdi-arrow-down, [aria-expanded="false"]');
+        headers.forEach(h => {
+            try { h.click(); } catch(e){}
+        });
+        // Clic en elementos que contengan texto como TIR o % si no estaban abiertos
+        const allElements = document.querySelectorAll('*');
+        allElements.forEach(el => {
+            if (el.className && typeof el.className === 'string' && el.className.includes('expansion-panel-header')) {
+                try { el.click(); } catch(e){}
+            }
+        });
+    }""")
+    page.wait_for_timeout(2500)
 
-    page.wait_for_timeout(2000)
-
-    # 2. Lectura secuencial por líneas
+    # 2. Lectura secuencial de las operaciones visibles
     body_text = page.inner_text("body")
     lineas = [l.strip() for l in body_text.split("\n") if l.strip() != ""]
 
@@ -84,7 +87,9 @@ def procesar_oportunidades_pantalla(page, moneda):
                 cobrado_usd = "-"
                 bancos_transferir = "-"
 
-                for j in range(i+1, min(i+35, len(lineas))):
+                # Ventana de búsqueda extendida hacia adelante
+                limite_j = min(i + 45, len(lineas))
+                for j in range(i + 1, limite_j):
                     sub = lineas[j]
                     sub_low = sub.lower()
                     
@@ -94,17 +99,20 @@ def procesar_oportunidades_pantalla(page, moneda):
                     elif re.match(r"^[\d\.\,]{2,10}$", sub) and solicitado != "-" and margen == "-": margen = sub
                     elif ("%" in sub or re.match(r"^\d{1,2}[\,\.]\d{1,2}$", sub)) and tir == "-": tir = sub
                     
+                    # BCU: buscar valores 1, 1A, 2, 2A, 3, 4, 5
                     elif sub_low == "bcu" and bcu == "-":
                         for k in range(j-1, max(i-1, j-4), -1):
                             if re.match(r"^[1-5][A-Za-z]?$", lineas[k]):
                                 bcu = lineas[k]
                                 break
-                    elif sub_low == "cobrado usd" and cobrado_usd == "-":
+                    # Cobrado USD
+                    elif "cobrado usd" in sub_low and cobrado_usd == "-":
                         for k in range(j-1, max(i-1, j-4), -1):
                             if re.match(r"^[\d\.\,]+$", lineas[k]) and lineas[k] != valor:
                                 cobrado_usd = lineas[k]
                                 break
-                    elif sub_low == "bancos a transferir" and bancos_transferir == "-":
+                    # Bancos a transferir
+                    elif "bancos a transferir" in sub_low and bancos_transferir == "-":
                         for k in range(j-1, max(i-1, j-4), -1):
                             cand = lineas[k]
                             if len(cand) > 1 and cand.lower() not in TITULOS_IGNORAR and not re.match(r"^[\d\.\,]+$", cand):
@@ -145,60 +153,84 @@ def procesar_oportunidades_pantalla(page, moneda):
                     "detVentas": "-"
                 }
                 
-                # Se agrega CADA operación legítima detectada en pantalla, sin descartar gemelas
                 if item["librador"] != "-" and item["valor"] != "-":
                     detalles_capturados.append(item)
             except Exception:
                 pass
         i += 1
 
-    print(f"[{moneda}] Oportunidades detectadas en pantalla: {len(detalles_capturados)}")
+    print(f"[{moneda}] Oportunidades base leídas: {len(detalles_capturados)}")
 
-    # 3. Interacción con Tooltips y Modales
+    # 3. Extraer Tooltips (BPS, DGI, Inforcheck) pasando el cursor por encima
     try:
-        botones_detalle = page.locator("button:has-text('Detalle'), a:has-text('Detalle'), button:has(.v-icon)").all()
-        modales_abiertos = 0
+        for tag in ["BPS", "DGI", "Inforcheck", "Relación"]:
+            elementos_tag = page.locator(f"text={tag}").all()
+            for el in elementos_tag:
+                try:
+                    if el.is_visible():
+                        el.hover(force=True)
+                        page.wait_for_timeout(250)
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
-        for btn in botones_detalle:
+    # 4. Modales de información detallada de la empresa
+    try:
+        # Detectar botones de detalle por texto o icono
+        selectores_botones = [
+            "button:has-text('Detalle')",
+            "button:has-text('Ver detalle')",
+            "a:has-text('Detalle')",
+            ".v-btn:has(.mdi-information)",
+            ".v-btn:has(.mdi-eye)",
+            "button:has(i.mdi-information-outline)"
+        ]
+        
+        botones = []
+        for sel in selectores_botones:
+            found = page.locator(sel).all()
+            for f in found:
+                if f.is_visible() and f not in botones:
+                    botones.append(f)
+
+        print(f"[{moneda}] Botones de detalle interactivos encontrados: {len(botones)}")
+
+        for btn in botones:
             try:
-                txt_btn = (btn.inner_text() or "").lower()
-                if "detalle" not in txt_btn and not btn.locator(".mdi-information, .mdi-eye").count():
-                    continue
-
-                if not btn.is_visible():
-                    continue
-
                 btn.scroll_into_view_if_needed()
                 btn.click(force=True)
                 page.wait_for_timeout(1000)
 
-                modal = page.locator(".v-dialog--active:visible, div[role='dialog']:visible").first
-                if modal.is_visible():
-                    texto_m = modal.inner_text()
-                    lineas_m = [l.strip() for l in texto_m.split("\n") if l.strip() != ""]
-                    
+                # Buscar el diálogo activo
+                dialog = page.locator(".v-dialog--active, div[role='dialog']").first
+                if dialog.is_visible():
+                    texto_d = dialog.inner_text()
+                    lines_d = [ld.strip() for ld in texto_d.split("\n") if ld.strip() != ""]
+
                     m_nom, m_banco, m_emi, m_razon = "-", "-", "-", "-"
                     m_rut, m_dir, m_depto, m_ind = "-", "-", "-", "-"
-                    m_cob, m_vig, m_desc, m_bman, m_ven = "-", "-", "-", "-", "-"
+                    m_cob, m_vig, m_desc, m_bman, m_ven = "-", "-", "-", "-"
 
-                    for idx_m, lm in enumerate(lineas_m):
+                    for idx_m, lm in enumerate(lines_d):
                         l_low = lm.lower()
-                        if l_low == "nombre" and idx_m+1 < len(lineas_m): m_nom = lineas_m[idx_m+1]
-                        elif l_low == "banco" and idx_m+1 < len(lineas_m): m_banco = lineas_m[idx_m+1]
-                        elif "emisión" in l_low and idx_m+1 < len(lineas_m): m_emi = lineas_m[idx_m+1]
-                        elif "razón social" in l_low and idx_m+1 < len(lineas_m): m_razon = lineas_m[idx_m+1]
-                        elif l_low == "rut" and idx_m+1 < len(lineas_m): m_rut = lineas_m[idx_m+1]
-                        elif "dirección" in l_low and idx_m+1 < len(lineas_m): m_dir = lineas_m[idx_m+1]
-                        elif "departamento" in l_low and idx_m+1 < len(lineas_m): m_depto = lineas_m[idx_m+1]
-                        elif "industria" in l_low and idx_m+1 < len(lineas_m): m_ind = lineas_m[idx_m+1]
-                        elif "cobrados" in l_low and idx_m+1 < len(lineas_m): m_cob = lineas_m[idx_m+1]
-                        elif "vigentes" in l_low and idx_m+1 < len(lineas_m): m_vig = lineas_m[idx_m+1]
-                        elif "descontado" in l_low and idx_m+1 < len(lineas_m): m_desc = lineas_m[idx_m+1]
-                        elif "maneja" in l_low and idx_m+1 < len(lineas_m): m_bman = lineas_m[idx_m+1]
-                        elif "ventas" in l_low and idx_m+1 < len(lineas_m): m_ven = lineas_m[idx_m+1]
+                        if l_low == "nombre" and idx_m+1 < len(lines_d): m_nom = lines_d[idx_m+1]
+                        elif l_low == "banco" and idx_m+1 < len(lines_d): m_banco = lines_d[idx_m+1]
+                        elif "emisión" in l_low and idx_m+1 < len(lines_d): m_emi = lines_d[idx_m+1]
+                        elif "razón social" in l_low and idx_m+1 < len(lines_d): m_razon = lines_d[idx_m+1]
+                        elif l_low == "rut" and idx_m+1 < len(lines_d): m_rut = lines_d[idx_m+1]
+                        elif "dirección" in l_low and idx_m+1 < len(lines_d): m_dir = lines_d[idx_m+1]
+                        elif "departamento" in l_low and idx_m+1 < len(lines_d): m_depto = lines_d[idx_m+1]
+                        elif "industria" in l_low and idx_m+1 < len(lines_d): m_ind = lines_d[idx_m+1]
+                        elif "cobrados" in l_low and idx_m+1 < len(lines_d): m_cob = lines_d[idx_m+1]
+                        elif "vigentes" in l_low and idx_m+1 < len(lines_d): m_vig = lines_d[idx_m+1]
+                        elif "descontado" in l_low and idx_m+1 < len(lines_d): m_desc = lines_d[idx_m+1]
+                        elif "maneja" in l_low and idx_m+1 < len(lines_d): m_bman = lines_d[idx_m+1]
+                        elif "ventas" in l_low and idx_m+1 < len(lines_d): m_ven = lines_d[idx_m+1]
 
-                    # Se asocia al primer ítem pendiente que coincida en nombre (consumiendo uno a uno para cheques mellizos)
+                    # Asociar los datos del modal al registro correspondiente
                     for item in detalles_capturados:
+                        # Si no tiene RUT asignado aún y coincide el nombre
                         if item.get("detRut") == "-" and m_nom != "-" and (m_nom.lower() in item['librador'].lower() or item['librador'].lower() in m_nom.lower()):
                             item['detBanco'] = limpiar_campo(m_banco)
                             item['detEmision'] = limpiar_campo(m_emi)
@@ -212,7 +244,6 @@ def procesar_oportunidades_pantalla(page, moneda):
                             item['detDescontadoVigente'] = limpiar_campo(m_desc)
                             item['detBancosManeja'] = limpiar_campo(m_bman)
                             item['detVentas'] = limpiar_campo(m_ven)
-                            modales_abiertos += 1
                             break
 
                 page.keyboard.press("Escape")
@@ -220,7 +251,7 @@ def procesar_oportunidades_pantalla(page, moneda):
             except Exception:
                 page.keyboard.press("Escape")
     except Exception as e:
-        print(f"Aviso procesando modales: {e}")
+        print(f"Aviso modales: {e}")
 
     return detalles_capturados
 
@@ -273,7 +304,7 @@ def ejecutar():
     if todos_detalles:
         print(f"Enviando {len(todos_detalles)} oportunidades al webhook...")
         resp = requests.post(WEBHOOK_URL, json={"detalles": todos_detalles})
-        print(f"Respuesta del servidor: {resp.text}")
+        print(f"Respuesta Sheets: {resp.text}")
     else:
         print("No se encontraron oportunidades en esta corrida.")
 
