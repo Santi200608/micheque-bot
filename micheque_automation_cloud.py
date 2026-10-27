@@ -10,20 +10,6 @@ WEBHOOK_URL = os.environ.get("GOOGLE_SHEET_ID")
 URL_LOGIN = "https://micheque.uy/login"
 URL_MARKET = "https://micheque.uy/market"
 
-TITULOS_IGNORAR = [
-    "librador", "valor", "vencimiento", "solicitado", "margen neto", 
-    "tir neta", "tipo", "bcu", "detalles de la operación", "comprar", "ofertar",
-    "disponible para ofertas", "filtrar por", "banco a transferir", "la mejor oferta"
-]
-
-def limpiar_campo(val, default="-"):
-    if not val:
-        return default
-    v = val.strip()
-    if v.lower() in TITULOS_IGNORAR or "la mejor oferta" in v.lower():
-        return default
-    return v
-
 def procesar_texto_seccion(texto, moneda_esperada):
     transacciones = []
     lineas = [l.strip() for l in texto.split("\n") if l.strip() != ""]
@@ -63,130 +49,12 @@ def procesar_texto_seccion(texto, moneda_esperada):
         i += 1
     return transacciones
 
-# ==============================================================================
-# BASE DE EXTRACCIÓN ROBUSTA (PROBADA Y FUNCIONAL)
-# ==============================================================================
-def extraer_detalles_desplegados(page, moneda):
-    detalles_capturados = []
-    try:
-        page.wait_for_timeout(3000)
-        
-        # Clics para desplegar la información de la tarjeta (TIR, BCU, etc.)
-        page.evaluate("""() => {
-            const btns = document.querySelectorAll('*');
-            btns.forEach(b => {
-                const txt = (b.innerText || '').toLowerCase();
-                if (txt.includes('detalles') || txt.includes('tir') || (b.className && typeof b.className === 'string' && (b.className.includes('chevron') || b.className.includes('arrow')))) {
-                    try { b.click(); } catch(e){}
-                }
-            });
-        }""")
-        page.wait_for_timeout(2000)
-
-        body_text = page.inner_text("body")
-        lineas = [l.strip() for l in body_text.split("\n") if l.strip() != ""]
-
-        i = 0
-        while i < len(lineas):
-            linea = lineas[i]
-            linea_lower = linea.lower()
-
-            es_cheque = linea_lower == "cheque"
-            es_transf = "transferencia programada" in linea_lower
-            es_factura = linea_lower == "factura"
-
-            if es_cheque or es_transf or es_factura:
-                try:
-                    tipo = "Transferencia Programada" if es_transf else ("Factura" if es_factura else "Cheque")
-                    librador = lineas[i-1] if i-1 >= 0 else ""
-                    lib_limpio = limpiar_campo(librador)
-
-                    # Filtro de seguridad anti-filas basura
-                    if (lib_limpio == "-" or 
-                        len(lib_limpio) < 2 or 
-                        "%" in lib_limpio or 
-                        re.match(r"^\d{1,2}/\d{1,2}/\d{4}$", lib_limpio) or 
-                        lib_limpio.replace(".", "").replace(",", "").isdigit() or 
-                        "mínimo" in lib_limpio.lower() or 
-                        "máximo" in lib_limpio.lower() or 
-                        "oferta" in lib_limpio.lower() or 
-                        "filtrar por" in lib_limpio.lower()):
-                        i += 1
-                        continue
-
-                    valor = "-"
-                    vto = "-"
-                    solicitado = "-"
-                    margen = "-"
-                    tir = "-"
-                    bcu = "-"
-
-                    for j in range(i+1, min(i+14, len(lineas))):
-                        sub = lineas[j]
-                        
-                        if re.match(r"^[\d\.\,]{3,15}$", sub) and valor == "-":
-                            valor = sub
-                        elif ("en " in sub.lower() and "días" in sub.lower() or re.match(r"^\d{2}/\d{2}/\d{4}$", sub)) and vto == "-":
-                            vto = sub
-                        elif re.match(r"^[\d\.\,]{3,15}$", sub) and valor != "-" and solicitado == "-":
-                            solicitado = sub
-                        elif re.match(r"^[\d\.\,]{2,10}$", sub) and solicitado != "-" and margen == "-":
-                            margen = sub
-                        elif ("%" in sub or re.match(r"^\d{1,2}[\,\.]\d{1,2}$", sub)) and tir == "-":
-                            tir = sub
-                        elif re.match(r"^\d[A-Z]$", sub) and bcu == "-":
-                            bcu = sub
-
-                    item = {
-                        "moneda": moneda,
-                        "librador": lib_limpio,
-                        "valor": valor,
-                        "vto": vto,
-                        "solicitado": solicitado,
-                        "margenNeto": margen,
-                        "tirNeta": tir,
-                        "tipo": tipo,
-                        "bcu": bcu,
-                        "cobradoUSD": "-",
-                        "bancosATransferir": "-",
-                        "mejorOferta": "-",
-                        "detValor": valor,
-                        "detBanco": "-",
-                        "detEmision": "-",
-                        "detVencimiento": vto if re.match(r"^\d{2}/\d{2}/\d{4}$", vto) else "-",
-                        "detNombre": lib_limpio,
-                        "detRazonSocial": "-",
-                        "detRut": "-",
-                        "detDireccion": "-",
-                        "detDepartamento": "-",
-                        "detIndustria": "-",
-                        "detCobrados": "-",
-                        "detVigentes": "-",
-                        "detDescontadoVigente": "-",
-                        "detBancosManeja": "-",
-                        "detVentas": "-"
-                    }
-                    
-                    if item["librador"] != "-" and item["valor"] != "-":
-                        detalles_capturados.append(item)
-                except Exception:
-                    pass
-            i += 1
-
-    except Exception as e:
-        print(f"Error general en extracción de detalles: {e}")
-
-    return detalles_capturados
-
-def obtener_transacciones():
+def ejecutar():
     todas_transacciones = []
-    todos_detalles = []
-    
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page(viewport={"width": 1400, "height": 900})
         
-        # 1. Login
         print("Iniciando sesión en MiCheque...")
         page.goto(URL_LOGIN, wait_until="networkidle")
         page.wait_for_timeout(2000)
@@ -196,7 +64,6 @@ def obtener_transacciones():
         page.keyboard.press("Enter")
         page.wait_for_timeout(4000)
         
-        # 2. Mercado
         print("Navegando al mercado...")
         page.goto(URL_MARKET, wait_until="networkidle")
         page.wait_for_timeout(5000)
@@ -204,16 +71,12 @@ def obtener_transacciones():
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         page.wait_for_timeout(2000)
 
-        # 3. Pesos
-        print("Extrayendo sección Pesos...")
+        # 1. Pesos
+        print("Extrayendo histórico en Pesos...")
         texto_pesos = page.inner_text("body")
-        pesos = procesar_texto_seccion(texto_pesos, "UY$")
-        todas_transacciones.extend(pesos)
-        
-        detalles_uy = extraer_detalles_desplegados(page, "UY$")
-        todos_detalles.extend(detalles_uy)
+        todas_transacciones.extend(procesar_texto_seccion(texto_pesos, "UY$"))
 
-        # 4. Dólares
+        # 2. Dólares
         print("Cambiando vista a Dólares...")
         try:
             elementos_usd = page.query_selector_all("button, div, span, a")
@@ -228,29 +91,18 @@ def obtener_transacciones():
                     continue
 
             page.wait_for_timeout(5000)
+            print("Extrayendo histórico en Dólares...")
             texto_usd = page.inner_text("body")
-            usd_items = procesar_texto_seccion(texto_usd, "USD")
-            todas_transacciones.extend(usd_items)
-            
-            detalles_usd = extraer_detalles_desplegados(page, "USD")
-            todos_detalles.extend(detalles_usd)
+            todas_transacciones.extend(procesar_texto_seccion(texto_usd, "USD"))
 
         except Exception as e:
             print(f"Error al cambiar a Dólares: {e}")
 
         browser.close()
-    return todas_transacciones, todos_detalles
 
-def ejecutar():
-    nuevas, detalles = obtener_transacciones()
-    
-    if nuevas:
-        print(f"Enviando {len(nuevas)} transacciones históricas a Google Sheets...")
-        requests.post(WEBHOOK_URL, json={"transacciones": nuevas})
-    
-    if detalles:
-        print(f"Enviando {len(detalles)} detalles de oportunidades a Google Sheets...")
-        requests.post(WEBHOOK_URL, json={"tipo_evento": "detalles_oportunidades", "detalles": detalles})
+    if todas_transacciones:
+        print(f"Enviando {len(todas_transacciones)} registros históricos a Google Sheets...")
+        requests.post(WEBHOOK_URL, json={"transacciones": todas_transacciones})
 
 if __name__ == "__main__":
     ejecutar()
