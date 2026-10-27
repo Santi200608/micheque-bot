@@ -1,0 +1,31 @@
+name: Scraper Oportunidades MiCheque
+
+on:
+  schedule:
+    # Se ejecuta de lunes a viernes en horario de mercado (cada 30 min aprox)
+    - cron: '*/30 11-21 * * 1-5'
+  workflow_dispatch: # Permite que lo ejecutes manualmente cuando quieras con un botón
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v3
+
+      - name: Instalar Python
+        uses: setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Instalar Playwright y dependencias
+        run: |
+          pip install requests playwright
+          playwright install chromium
+
+      - name: Correr Scraper de Oportunidades
+        env:
+          MICHEQUE_USER: ${{ secrets.MICHEQUE_USER }}
+          MICHEQUE_PASS: ${{ secrets.MICHEQUE_PASS }}
+          GOOGLE_SHEET_OPORTUNIDADES_URL: ${{ secrets.GOOGLE_SHEET_OPORTUNIDADES_URL }}
+        run: python oportunidades.py
