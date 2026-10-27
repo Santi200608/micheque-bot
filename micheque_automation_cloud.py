@@ -13,8 +13,7 @@ URL_MARKET = "https://micheque.uy/market"
 TITULOS_IGNORAR = [
     "librador", "valor", "vencimiento", "solicitado", "margen neto", 
     "tir neta", "tipo", "bcu", "detalles de la operación", "comprar", "ofertar",
-    "disponible para ofertas", "filtrar por", "banco a transferir", "la mejor oferta",
-    "cobrado usd", "bancos a transferir", "bancos que maneja"
+    "disponible para ofertas", "filtrar por", "banco a transferir", "la mejor oferta"
 ]
 
 def limpiar_campo(val, default="-"):
@@ -64,29 +63,11 @@ def procesar_texto_seccion(texto, moneda_esperada):
         i += 1
     return transacciones
 
-def extraer_tooltip(tarjeta, page, texto_buscar):
-    try:
-        el = tarjeta.locator(f"xpath=.//*[contains(text(), '{texto_buscar}')]").first
-        if el.is_visible():
-            el.hover(force=True)
-            page.wait_for_timeout(400)
-            tooltip = page.locator(".v-tooltip__content:visible, .tooltip:visible").last
-            if tooltip.is_visible():
-                txt = tooltip.inner_text().strip()
-                page.mouse.move(0, 0)
-                page.wait_for_timeout(150)
-                return txt
-    except Exception:
-        pass
-    page.mouse.move(0, 0)
-    return "-"
-
 def extraer_detalles_desplegados(page, moneda):
     detalles_capturados = []
     try:
         page.wait_for_timeout(3000)
         
-        # 1. Desplegar información extendida en pantalla (TU LÓGICA BASE)
         page.evaluate("""() => {
             const btns = document.querySelectorAll('*');
             btns.forEach(b => {
@@ -98,7 +79,6 @@ def extraer_detalles_desplegados(page, moneda):
         }""")
         page.wait_for_timeout(2000)
 
-        # 2. TU MOTOR BASE INTOCABLE (Columnas A - J)
         body_text = page.inner_text("body")
         lineas = [l.strip() for l in body_text.split("\n") if l.strip() != ""]
 
@@ -117,7 +97,6 @@ def extraer_detalles_desplegados(page, moneda):
                     librador = lineas[i-1] if i-1 >= 0 else ""
                     lib_limpio = limpiar_campo(librador)
 
-                    # Filtro estricto original
                     if (lib_limpio == "-" or 
                         len(lib_limpio) < 2 or 
                         "%" in lib_limpio or 
@@ -152,27 +131,6 @@ def extraer_detalles_desplegados(page, moneda):
                         elif re.match(r"^\d[A-Z]$", sub) and bcu == "-":
                             bcu = sub
 
-                    # 3. EXTRACCIÓN J-L (Cobrado USD y Bancos a transferir)
-                    cobrado_usd = "-"
-                    bancos_transferir = "-"
-                    bloque_texto = " \n ".join(lineas[i:min(i+25, len(lineas))])
-
-                    m_cob = re.search(r"([\d\.\,]+)\s*\n\s*cobrado usd", bloque_texto, re.IGNORECASE)
-                    if m_cob:
-                        cobrado_usd = m_cob.group(1).strip()
-
-                    m_ban = re.search(r"([A-Za-z\s]+)\s*\n\s*bancos? a transferir", bloque_texto, re.IGNORECASE)
-                    if m_ban:
-                        cand = m_ban.group(1).strip()
-                        if len(cand) > 1 and cand.lower() not in TITULOS_IGNORAR:
-                            bancos_transferir = cand
-
-                    # Si el BCU no entró en el bucle original, intento de respaldo
-                    if bcu == "-":
-                        m_bcu = re.search(r"([0-9][A-Za-z]?)\s*\n\s*bcu", bloque_texto, re.IGNORECASE)
-                        if m_bcu:
-                            bcu = m_bcu.group(1).strip()
-
                     item = {
                         "moneda": moneda,
                         "librador": lib_limpio,
@@ -183,8 +141,8 @@ def extraer_detalles_desplegados(page, moneda):
                         "tirNeta": tir,
                         "tipo": tipo,
                         "bcu": bcu,
-                        "cobradoUSD": cobrado_usd,
-                        "bancosATransferir": bancos_transferir,
+                        "cobradoUSD": "-",
+                        "bancosATransferir": "-",
                         "bps": "-",
                         "dgi": "-",
                         "inforcheck": "-",
@@ -213,83 +171,6 @@ def extraer_detalles_desplegados(page, moneda):
                     pass
             i += 1
 
-        # 4. HOVER (BPS, DGI, Inforcheck, Relación comercial) + MODALES (Q a AF)
-        try:
-            botones_detalle = page.locator("text=/Detalles de la operación/i, text=/Ver detalle/i").all()
-            for btn in botones_detalle:
-                try:
-                    if not btn.is_visible():
-                        continue
-
-                    # Extraer tooltips desde el contenedor de la tarjeta
-                    m_bps, m_dgi, m_inf, m_rel = "-", "-", "-", "-"
-                    try:
-                        tarjeta = btn.locator("xpath=ancestor::*[contains(@class, 'v-expansion-panel') or contains(@class, 'card') or contains(@class, 'panel')]").first
-                        if tarjeta.is_visible():
-                            m_bps = extraer_tooltip(tarjeta, page, "BPS")
-                            m_dgi = extraer_tooltip(tarjeta, page, "DGI")
-                            m_inf = extraer_tooltip(tarjeta, page, "Inforcheck")
-                            m_rel = extraer_tooltip(tarjeta, page, "Relación comercial")
-                    except Exception:
-                        pass
-
-                    btn.click(force=True)
-                    page.wait_for_timeout(1000)
-
-                    modal = page.locator(".v-dialog--active, .v-overlay__content").first
-                    if modal.is_visible():
-                        texto_modal = modal.inner_text()
-                        lineas_m = [l.strip() for l in texto_modal.split("\n") if l.strip() != ""]
-
-                        m_nom, m_banco, m_emi, m_razon = "-", "-", "-", "-"
-                        m_rut, m_dir, m_depto, m_ind = "-", "-", "-", "-"
-                        m_cob, m_vig, m_desc, m_bman, m_ven = "-", "-", "-", "-", "-"
-
-                        for idx_m, lm in enumerate(lineas_m):
-                            l_low = lm.lower()
-                            if l_low == "nombre" and idx_m+1 < len(lineas_m): m_nom = lineas_m[idx_m+1]
-                            elif l_low == "banco" and idx_m+1 < len(lineas_m): m_banco = lineas_m[idx_m+1]
-                            elif "emisión" in l_low and idx_m+1 < len(lineas_m): m_emi = lineas_m[idx_m+1]
-                            elif "razón social" in l_low and idx_m+1 < len(lineas_m): m_razon = lineas_m[idx_m+1]
-                            elif l_low == "rut" and idx_m+1 < len(lineas_m): m_rut = lineas_m[idx_m+1]
-                            elif "dirección" in l_low and idx_m+1 < len(lineas_m): m_dir = lineas_m[idx_m+1]
-                            elif l_low == "departamento" and idx_m+1 < len(lineas_m): m_depto = lineas_m[idx_m+1]
-                            elif l_low == "industria" and idx_m+1 < len(lineas_m): m_ind = lineas_m[idx_m+1]
-                            elif "cobrados" in l_low and idx_m+1 < len(lineas_m): m_cob = lineas_m[idx_m+1]
-                            elif "vigentes" in l_low and idx_m+1 < len(lineas_m): m_vig = lineas_m[idx_m+1]
-                            elif "descontado" in l_low and idx_m+1 < len(lineas_m): m_desc = lineas_m[idx_m+1]
-                            elif "maneja" in l_low and idx_m+1 < len(lineas_m): m_bman = lineas_m[idx_m+1]
-                            elif l_low == "ventas" and idx_m+1 < len(lineas_m): m_ven = lineas_m[idx_m+1]
-
-                        # Asignar a la tarjeta correspondiente
-                        for item in detalles_capturados:
-                            if m_nom != "-" and (m_nom.lower() in item['librador'].lower() or item['librador'].lower() in m_nom.lower()):
-                                if m_bps != "-": item['bps'] = limpiar_campo(m_bps)
-                                if m_dgi != "-": item['dgi'] = limpiar_campo(m_dgi)
-                                if m_inf != "-": item['inforcheck'] = limpiar_campo(m_inf)
-                                if m_rel != "-": item['relacionComercial'] = limpiar_campo(m_rel)
-                                item['detBanco'] = limpiar_campo(m_banco)
-                                item['detEmision'] = limpiar_campo(m_emi)
-                                item['detRazonSocial'] = limpiar_campo(m_razon)
-                                item['detRut'] = limpiar_campo(m_rut)
-                                item['detDireccion'] = limpiar_campo(m_dir)
-                                item['detDepartamento'] = limpiar_campo(m_depto)
-                                item['detIndustria'] = limpiar_campo(m_ind)
-                                item['detCobrados'] = limpiar_campo(m_cob)
-                                item['detVigentes'] = limpiar_campo(m_vig)
-                                item['detDescontadoVigente'] = limpiar_campo(m_desc)
-                                item['detBancosManeja'] = limpiar_campo(m_bman)
-                                item['detVentas'] = limpiar_campo(m_ven)
-                                break
-
-                    page.keyboard.press("Escape")
-                    page.wait_for_timeout(500)
-                except Exception:
-                    page.keyboard.press("Escape")
-                    page.wait_for_timeout(500)
-        except Exception as e:
-            print(f"Error en enriquecimiento de modales: {e}")
-
     except Exception as e:
         print(f"Error general en extracción de detalles: {e}")
 
@@ -303,7 +184,6 @@ def obtener_transacciones():
         browser = p.chromium.launch(headless=True)
         page = browser.new_page(viewport={"width": 1400, "height": 900})
         
-        # 1. Login
         print("Iniciando sesión en MiCheque...")
         page.goto(URL_LOGIN, wait_until="networkidle")
         page.wait_for_timeout(2000)
@@ -313,7 +193,6 @@ def obtener_transacciones():
         page.keyboard.press("Enter")
         page.wait_for_timeout(4000)
         
-        # 2. Mercado
         print("Navegando al mercado...")
         page.goto(URL_MARKET, wait_until="networkidle")
         page.wait_for_timeout(5000)
@@ -321,7 +200,6 @@ def obtener_transacciones():
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         page.wait_for_timeout(2000)
 
-        # 3. Pesos
         print("Extrayendo sección Pesos...")
         texto_pesos = page.inner_text("body")
         pesos = procesar_texto_seccion(texto_pesos, "UY$")
@@ -330,7 +208,6 @@ def obtener_transacciones():
         detalles_uy = extraer_detalles_desplegados(page, "UY$")
         todos_detalles.extend(detalles_uy)
 
-        # 4. Dólares
         print("Cambiando vista a Dólares...")
         try:
             elementos_usd = page.query_selector_all("button, div, span, a")
@@ -371,3 +248,4 @@ def ejecutar():
 
 if __name__ == "__main__":
     ejecutar()
+Borra en tu planilla las filas desplazadas (desde la 6716 en adelante) y ejecuta. Las nuevas inserciones volverán a colocarse a partir de la columna B, dejando la columna A vacía y manteniendo intactas tus fórmulas de las columnas H, I y J.
