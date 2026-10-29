@@ -39,27 +39,35 @@ def limpiar_campo(val, default="-"):
         return default
     return v
 
-def desplegar_todas_las_tarjetas(page):
-    """Hace clic secuencial en cada chevron/flecha para abrir absolutamente todas las tarjetas."""
+def desplegar_filas_una_a_una(page):
+    """Abre secuencialmente cada panel o fila de oportunidad"""
     try:
-        chevrons = page.locator("button i.mdi-chevron-down, button i.mdi-menu-down, .v-expansion-panel-header").all()
-        for ch in chevrons:
+        # Busca los encabezados de expansión o filas clickeables
+        headers = page.locator(".v-expansion-panel-header, div[role='button']:has-text('%')")
+        total = headers.count()
+        print(f"Desplegando {total} tarjetas de operaciones...")
+        for idx in range(total):
             try:
-                if ch.is_visible():
-                    ch.click(force=True)
-                    page.wait_for_timeout(350)
+                h = headers.nth(idx)
+                if h.is_visible():
+                    # Si no está abierto, hacer clic
+                    aria_exp = h.get_attribute("aria-expanded")
+                    if aria_exp != "true":
+                        h.scroll_into_view_if_needed()
+                        h.click(force=True)
+                        page.wait_for_timeout(400)
             except Exception:
                 pass
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Aviso desplegando filas: {e}")
     page.wait_for_timeout(1500)
 
 def procesar_seccion(page, moneda):
     detalles = []
     page.wait_for_timeout(2000)
 
-    # 1. Abrir metódicamente cada fila para mostrar BCU, Bancos y Detalles
-    desplegar_todas_las_tarjetas(page)
+    # 1. Abrir tarjetas
+    desplegar_filas_una_a_una(page)
 
     # 2. Lectura secuencial de las tarjetas en pantalla
     body_text = page.inner_text("body")
@@ -162,7 +170,7 @@ def procesar_seccion(page, moneda):
 
     print(f"[{moneda}] Oportunidades encontradas: {len(detalles)}")
 
-    # 3. Interacción con modales de detalle
+    # 3. Interacción con modales de detalles
     try:
         botones_detalle = page.locator("button:has-text('Detalles de la operación'), a:has-text('Detalles de la operación'), text=/Detalles de la operación/i").all()
         for btn in botones_detalle:
@@ -224,6 +232,33 @@ def procesar_seccion(page, moneda):
 
     return detalles
 
+def cambiar_a_dolares(page):
+    """Fuerza el cambio a la pestaña de Dólares mediante JavaScript nativo"""
+    print("Intentando cambiar a Dólares...")
+    exito = page.evaluate("""() => {
+        const elementos = Array.from(document.querySelectorAll('button, div, a, span'));
+        for (const el of elementos) {
+            const txt = (el.innerText || '').trim().toLowerCase();
+            if (txt.includes('dólares') || txt.includes('dolares')) {
+                // Si tiene borde o apariencia de botón lateral
+                if (el.tagName === 'BUTTON' || el.getAttribute('role') === 'button' || el.className.includes('btn') || el.className.includes('tab') || txt.includes('(')) {
+                    el.click();
+                    return true;
+                }
+            }
+        }
+        return false;
+    }""")
+    if not exito:
+        # Fallback con Playwright directo
+        btn = page.locator("text=/D[oó]lares/i").first
+        if btn.is_visible():
+            btn.click(force=True)
+            exito = True
+
+    page.wait_for_timeout(5000)
+    return exito
+
 def ejecutar():
     todos_detalles = []
     with sync_playwright() as p:
@@ -261,17 +296,10 @@ def ejecutar():
         # 2. Dólares
         print("4. Cambiando a Dólares...")
         try:
-            # Seleccionar botón que contenga Dólares o Dolares
-            boton_dolares = page.locator("div, button, a").filter(has_text=re.compile(r"^D[oó]lares", re.IGNORECASE)).last
-            if boton_dolares.is_visible():
-                boton_dolares.click(force=True)
-                # Esperar a que la lista cambie de registros (desaparezca el primer cheque de pesos)
-                page.wait_for_timeout(5000)
-                print("5. Extrayendo oportunidades en Dólares...")
-                detalles_usd = procesar_seccion(page, "USD")
-                todos_detalles.extend(detalles_usd)
-            else:
-                print("No se encontró el botón de Dólares.")
+            cambiar_a_dolares(page)
+            print("5. Extrayendo oportunidades en Dólares...")
+            detalles_usd = procesar_seccion(page, "USD")
+            todos_detalles.extend(detalles_usd)
         except Exception as e:
             print(f"Error cambiando a Dólares: {e}")
 
