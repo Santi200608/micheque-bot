@@ -39,21 +39,27 @@ def limpiar_campo(val, default="-"):
         return default
     return v
 
-def procesar_seccion(page, moneda):
-    detalles = []
-    page.wait_for_timeout(3000)
-
-    # 1. Expandir las filas haciendo clic en los chevrons/flechas de la derecha
+def desplegar_todas_las_tarjetas(page):
+    """Hace clic secuencial en cada chevron/flecha para abrir absolutamente todas las tarjetas."""
     try:
-        page.evaluate("""() => {
-            const icons = document.querySelectorAll('button i.mdi-chevron-down, button i.mdi-menu-down, .v-expansion-panel-header, [class*="chevron"]');
-            icons.forEach(el => {
-                try { el.click(); } catch(e){}
-            });
-        }""")
+        chevrons = page.locator("button i.mdi-chevron-down, button i.mdi-menu-down, .v-expansion-panel-header").all()
+        for ch in chevrons:
+            try:
+                if ch.is_visible():
+                    ch.click(force=True)
+                    page.wait_for_timeout(350)
+            except Exception:
+                pass
     except Exception:
         pass
-    page.wait_for_timeout(2500)
+    page.wait_for_timeout(1500)
+
+def procesar_seccion(page, moneda):
+    detalles = []
+    page.wait_for_timeout(2000)
+
+    # 1. Abrir metódicamente cada fila para mostrar BCU, Bancos y Detalles
+    desplegar_todas_las_tarjetas(page)
 
     # 2. Lectura secuencial de las tarjetas en pantalla
     body_text = page.inner_text("body")
@@ -158,7 +164,7 @@ def procesar_seccion(page, moneda):
 
     # 3. Interacción con modales de detalle
     try:
-        botones_detalle = page.locator("button:has-text('Detalle'), a:has-text('Detalle'), button:has(.mdi-information), button:has(.mdi-eye)").all()
+        botones_detalle = page.locator("button:has-text('Detalles de la operación'), a:has-text('Detalles de la operación'), text=/Detalles de la operación/i").all()
         for btn in botones_detalle:
             try:
                 if not btn.is_visible():
@@ -252,22 +258,20 @@ def ejecutar():
         detalles_uy = procesar_seccion(page, "UY$")
         todos_detalles.extend(detalles_uy)
 
-        # 2. Dólares (selector exacto con botón lateral)
+        # 2. Dólares
         print("4. Cambiando a Dólares...")
         try:
-            # Busca el botón lateral que contiene 'Dólares' o 'Dolares' seguido del conteo (ej: Dólares (8))
-            btn_usd = page.locator("button, div, a").filter(has_text=re.compile(r"D[oó]lares\s*\(\d+\)", re.IGNORECASE)).first
-            if not btn_usd.is_visible():
-                btn_usd = page.locator("text=/D[oó]lares/i").first
-
-            if btn_usd.is_visible():
-                btn_usd.click(force=True)
-                page.wait_for_timeout(4500)
+            # Seleccionar botón que contenga Dólares o Dolares
+            boton_dolares = page.locator("div, button, a").filter(has_text=re.compile(r"^D[oó]lares", re.IGNORECASE)).last
+            if boton_dolares.is_visible():
+                boton_dolares.click(force=True)
+                # Esperar a que la lista cambie de registros (desaparezca el primer cheque de pesos)
+                page.wait_for_timeout(5000)
                 print("5. Extrayendo oportunidades en Dólares...")
                 detalles_usd = procesar_seccion(page, "USD")
                 todos_detalles.extend(detalles_usd)
             else:
-                print("No se localizó el botón de Dólares.")
+                print("No se encontró el botón de Dólares.")
         except Exception as e:
             print(f"Error cambiando a Dólares: {e}")
 
